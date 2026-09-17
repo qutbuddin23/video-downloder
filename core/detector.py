@@ -194,8 +194,6 @@ class MediaDetector:
         try:
             resp = requests.get(url, headers=self.DEFAULT_HEADERS, timeout=12)
             html = resp.text
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "html.parser")
         except Exception as e:
             return {
                 "success": False,
@@ -207,32 +205,32 @@ class MediaDetector:
             }
 
         # Determine Page Title
-        title_tag = soup.find("title")
-        title = title_tag.get_text().strip() if title_tag else "Detected Web Video"
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else "Detected Web Video"
 
         # Determine Thumbnail
         thumbnail = ""
-        og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-        if og_img and og_img.get("content"):
-            thumbnail = urllib.parse.urljoin(url, og_img["content"])
+        og_img = re.search(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if not og_img:
+            og_img = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']', html, re.IGNORECASE)
+        if og_img and og_img.group(1):
+            thumbnail = urllib.parse.urljoin(url, og_img.group(1))
 
         detected_urls = set()
 
         # 1. HTML5 <video> & <source> tags
-        for v in soup.find_all("video"):
-            src = v.get("src")
-            if src:
-                detected_urls.add(urllib.parse.urljoin(url, src))
-            for s in v.find_all("source"):
-                ssrc = s.get("src")
-                if ssrc:
-                    detected_urls.add(urllib.parse.urljoin(url, ssrc))
+        for v in re.finditer(r'<video[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
+            detected_urls.add(urllib.parse.urljoin(url, v.group(1)))
+        for s in re.finditer(r'<source[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
+            detected_urls.add(urllib.parse.urljoin(url, s.group(1)))
 
         # 2. Meta tags (OpenGraph / Twitter card video)
         for meta_name in ["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"]:
-            m = soup.find("meta", property=meta_name) or soup.find("meta", attrs={"name": meta_name})
-            if m and m.get("content"):
-                detected_urls.add(urllib.parse.urljoin(url, m["content"]))
+            m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(meta_name)}["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if not m:
+                m = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(meta_name)}["\']', html, re.IGNORECASE)
+            if m and m.group(1):
+                detected_urls.add(urllib.parse.urljoin(url, m.group(1)))
 
         # 3. Regex search in page scripts for .m3u8, .mpd, .mp4
         m3u8_pattern = r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?'

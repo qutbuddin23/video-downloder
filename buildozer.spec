@@ -7,7 +7,7 @@ source.include_exts = py,png,jpg,kv,atlas,html,css,js,ttf,woff2,svg,json,db
 version = 1.0.0
 
 # Requirements: pure python libs + kivy & pyjnius + sqlite3 & openssl
-requirements = python3,kivy,sqlite3,openssl,certifi,requests,beautifulsoup4,typing_extensions,soupsieve,yt-dlp,pyjnius,pyaes
+requirements = python3,kivy,sqlite3,openssl,certifi,requests,yt-dlp,pyjnius,pyaes
 
 orientation = portrait
 fullscreen = 0

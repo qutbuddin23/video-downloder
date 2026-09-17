@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Universal Video Downloader & Private Vault</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app-container">
+        <!-- Top App Bar -->
+        <header class="top-bar">
+            <div class="brand">
+                <div class="brand-icon">⚡</div>
+                <div class="brand-title">Universal Downloader</div>
+            </div>
+            <div class="top-actions">
+                <button class="icon-btn" title="Storage Status" onclick="switchTab('settings')">📊</button>
+                <button class="icon-btn" title="Private Vault" onclick="switchTab('vault')">🔒</button>
+            </div>
+        </header>
+
+        <!-- Main Content Screens Viewport -->
+        <main class="screens-viewport">
+            <!-- Screen 1: Home (URL Paste & Sniffer) -->
+            <section id="screen-home" class="screen active">
+                <div class="card">
+                    <div class="card-title"><span>📥</span> Paste Video or Page URL</div>
+                    <div class="url-input-container">
+                        <input type="text" id="url-input" class="url-input-box" placeholder="https://example.com/video or page..." />
+                        <div class="btn-row">
+                            <button id="btn-paste" class="btn btn-secondary">📋 Paste</button>
+                            <button id="btn-analyze" class="btn btn-primary">🔍 Analyze & Sniff</button>
+                        </div>
+                    </div>
+
+                    <div class="chips-container">
+                        <span class="chip">YouTube</span>
+                        <span class="chip">Instagram</span>
+                        <span class="chip">TikTok</span>
+                        <span class="chip">Twitter / X</span>
+                        <span class="chip">Facebook</span>
+                        <span class="chip">HLS .m3u8</span>
+                        <span class="chip">DASH .mpd</span>
+                        <span class="chip">Direct MP4</span>
+                    </div>
+                </div>
+
+                <!-- Analysis Spinner / Status -->
+                <div id="analysis-status" style="display:none; text-align:center; padding: 20px; color: #818CF8; font-weight:600;">
+                    Analyzing URL & Sniffing Media Streams...
+                </div>
+
+                <!-- DRM Protected Warning Card -->
+                <div id="drm-card" class="card" style="display:none; border-color: #EF4444; background: rgba(239, 68, 68, 0.1);">
+                    <div class="card-title" style="color: #EF4444;"><span>⚠️</span> Download Unavailable</div>
+                    <p id="drm-reason" style="font-size: 13px; line-height: 1.5; color: #FCA5A5;">
+                        This stream uses DRM or access-control encryption and cannot be downloaded legitimately.
+                    </p>
+                </div>
+
+                <!-- Video Preview & Format Selection Card -->
+                <div id="video-preview-card" class="card video-preview-card">
+                    <img id="preview-thumbnail" class="preview-thumbnail" src="" alt="Thumbnail" />
+                    <div id="preview-title" class="preview-title">Video Title</div>
+                    <div id="preview-meta" class="preview-meta">00:00 • 1080p</div>
+
+                    <div style="font-size:12px; font-weight:700; margin-bottom:8px; color:#94A3B8;">AVAILABLE QUALITY & FORMATS:</div>
+                    <div id="formats-list" class="formats-list">
+                        <!-- Populated by JS -->
+                    </div>
+
+                    <button id="btn-start-download" class="btn btn-primary" style="width:100%;">
+                        ⬇ Start Download
+                    </button>
+                </div>
+            </section>
+
+            <!-- Screen 2: In-App Browser & Sniffer -->
+            <section id="screen-browser" class="screen">
+                <div class="browser-bar">
+                    <input type="text" id="browser-url-input" class="browser-input" placeholder="Enter website URL..." value="https://en.wikipedia.org" />
+                    <button id="btn-browser-go" class="btn btn-secondary btn-sm">Go</button>
+                    <button id="btn-browser-detect" class="btn btn-primary btn-sm">🎯 Sniff</button>
+                </div>
+                <iframe id="browser-webview" class="browser-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+            </section>
+
+            <!-- Screen 3: Downloads Manager -->
+            <section id="screen-downloads" class="screen">
+                <div class="segmented-control">
+                    <button class="segment-btn active" data-filter="all">All</button>
+                    <button class="segment-btn" data-filter="active">Active</button>
+                    <button class="segment-btn" data-filter="completed">Completed</button>
+                    <button class="segment-btn" data-filter="failed">Failed</button>
+                </div>
+
+                <div id="downloads-list">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Screen 4: Private Vault -->
+            <section id="screen-vault" class="screen">
+                <!-- Locked View (PIN Keypad) -->
+                <div id="vault-locked-view" class="card" style="text-align: center; padding: 24px 16px;">
+                    <div style="font-size: 40px; margin-bottom: 10px;">🔒</div>
+                    <h3 id="vault-pin-title" style="font-size: 16px; margin-bottom: 6px;">Enter Vault PIN</h3>
+                    <p style="font-size: 12px; color: #94A3B8;">AES-256 Application-Level Hardware Encrypted Storage</p>
+
+                    <div class="pin-display">
+                        <div class="pin-dot" id="pin-dot-1"></div>
+                        <div class="pin-dot" id="pin-dot-2"></div>
+                        <div class="pin-dot" id="pin-dot-3"></div>
+                        <div class="pin-dot" id="pin-dot-4"></div>
+                    </div>
+
+                    <div class="keypad-grid">
+                        <button class="keypad-btn" data-num="1">1</button>
+                        <button class="keypad-btn" data-num="2">2</button>
+                        <button class="keypad-btn" data-num="3">3</button>
+                        <button class="keypad-btn" data-num="4">4</button>
+                        <button class="keypad-btn" data-num="5">5</button>
+                        <button class="keypad-btn" data-num="6">6</button>
+                        <button class="keypad-btn" data-num="7">7</button>
+                        <button class="keypad-btn" data-num="8">8</button>
+                        <button class="keypad-btn" data-num="9">9</button>
+                        <button class="keypad-btn" data-num="C" style="color:#EF4444; font-size:16px;">CLEAR</button>
+                        <button class="keypad-btn" data-num="0">0</button>
+                        <button class="keypad-btn" data-num="OK" style="color:#10B981; font-size:16px;">OK</button>
+                    </div>
+                </div>
+
+                <!-- Unlocked View -->
+                <div id="vault-unlocked-view" style="display:none;">
+                    <!-- Storage Weight Breakdown -->
+                    <div class="card" style="border-left: 4px solid #EC4899;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+                            <div style="font-size:14px; font-weight:700;">🔐 Private Vault Storage</div>
+                            <button id="btn-lock-vault" class="btn btn-secondary btn-sm" style="padding:4px 8px;">Lock Vault</button>
+                        </div>
+                        <div id="vault-stats-weight" style="font-size: 20px; font-weight:800; color:#EC4899; margin-bottom: 6px;">
+                            0 B (0 Videos)
+                        </div>
+                        <p style="font-size: 11px; color: #94A3B8;">
+                            Hidden from device gallery & file managers. Fully encrypted with AES-256.
+                        </p>
+                    </div>
+
+                    <div id="vault-items-list">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Screen 5: Settings & Storage Analytics -->
+            <section id="screen-settings" class="screen">
+                <div class="card">
+                    <div class="card-title"><span>💾</span> Device Storage Analytics</div>
+                    
+                    <div class="storage-meter">
+                        <div class="meter-bar">
+                            <div id="meter-downloads" class="meter-segment downloads" style="width: 15%"></div>
+                            <div id="meter-vault" class="meter-segment vault" style="width: 10%"></div>
+                            <div id="meter-free" class="meter-segment free" style="width: 75%"></div>
+                        </div>
+                        <div class="legend">
+                            <div class="legend-item"><span class="legend-dot" style="background:#6366F1"></span> Downloads (<span id="storage-downloads-text">0 B</span>)</div>
+                            <div class="legend-item"><span class="legend-dot" style="background:#EC4899"></span> Vault (<span id="storage-vault-text">0 B</span>)</div>
+                            <div class="legend-item"><span class="legend-dot" style="background:#10B981"></span> Free (<span id="storage-free-text">0 B</span>)</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;">Incomplete Temporary Files</div>
+                            <div id="temp-files-badge" style="font-size:11px; color:#94A3B8;">0 B (0 files)</div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="cleanTempFiles()">Clean</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><span>⚙️</span> Preferences & Features</div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;">Floating Download Button</div>
+                            <div style="font-size:11px; color:#94A3B8;">Show floating assistant over external apps</div>
+                        </div>
+                        <input type="checkbox" id="toggle-floating-button" checked style="width:20px; height:20px; cursor:pointer;" />
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;">Auto-Lock Timeout</div>
+                            <div style="font-size:11px; color:#94A3B8;">Lock vault after inactivity</div>
+                        </div>
+                        <select id="select-auto-lock" class="url-input-box" style="width: 100px; padding: 4px 8px; font-size:12px;">
+                            <option value="30">30s</option>
+                            <option value="60" selected>1 min</option>
+                            <option value="300">5 min</option>
+                            <option value="0">Never</option>
+                        </select>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;">Default Quality</div>
+                            <div style="font-size:11px; color:#94A3B8;">Auto-select resolution</div>
+                        </div>
+                        <select id="select-default-quality" class="url-input-box" style="width: 100px; padding: 4px 8px; font-size:12px;">
+                            <option value="best" selected>Best</option>
+                            <option value="1080p">1080p</option>
+                            <option value="720p">720p</option>
+                            <option value="480p">480p</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Bottom Navigation Bar -->
+        <nav class="bottom-nav">
+            <button class="nav-item active" data-tab="home">
+                <span class="nav-icon">⚡</span>
+                <span>Home</span>
+            </button>
+            <button class="nav-item" data-tab="browser">
+                <span class="nav-icon">🌐</span>
+                <span>Browser</span>
+            </button>
+            <button class="nav-item" data-tab="downloads">
+                <span class="nav-icon">📥</span>
+                <span>Downloads</span>
+            </button>
+            <button class="nav-item" data-tab="vault">
+                <span class="nav-icon">🔒</span>
+                <span>Vault</span>
+            </button>
+            <button class="nav-item" data-tab="settings">
+                <span class="nav-icon">⚙️</span>
+                <span>Settings</span>
+            </button>
+        </nav>
+
+        <!-- Video Player Fullscreen Modal -->
+        <div id="player-modal" class="modal-overlay">
+            <div class="modal-content">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <div style="font-size:14px; font-weight:700;">▶ Built-In Video Player</div>
+                    <button class="btn btn-secondary btn-sm" onclick="closePlayer()">✕ Close</button>
+                </div>
+                <video id="media-player" class="video-player" controls playsinline></video>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

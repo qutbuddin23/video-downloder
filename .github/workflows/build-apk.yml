@@ -29,7 +29,18 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev ccache
+
+      - name: Cache Buildozer, Android SDK, and NDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+            ~/.gradle
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
 
       - name: Install Buildozer & Cython
         run: |
@@ -38,7 +49,12 @@ jobs:
 
       - name: Build Android APK
         run: |
-          yes | buildozer -v android debug
+          export USE_CCACHE=1
+          yes | buildozer -v android debug || {
+            echo "================ BUILDOZER LOG SUMMARY ================"
+            find .buildozer -name "*.log" -exec tail -n 150 {} +
+            exit 1
+          }
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

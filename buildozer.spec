@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,html,css,js,ttf,woff2,svg,json,db
 version = 1.0.0
 
-# Requirements: kivy is required by the p4a bootstrap, pyaes replaces cryptography for pure-python mobile AES
+# Requirements: pure python libs + kivy & pyjnius
 requirements = python3,kivy,requests,beautifulsoup4,yt-dlp,pyjnius,pyaes
 
 orientation = portrait
@@ -15,16 +15,15 @@ fullscreen = 0
 # Android permissions
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,SYSTEM_ALERT_WINDOW,FOREGROUND_SERVICE,POST_NOTIFICATIONS,WAKE_LOCK,READ_MEDIA_VIDEO,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,USE_BIOMETRIC
 
-# Stable Android API and NDK targets
+# Targets arm64-v8a only for 2x faster build speed and modern device compatibility
+android.archs = arm64-v8a
 android.api = 33
 android.minapi = 26
 android.ndk = 25b
-android.archs = arm64-v8a, armeabi-v7a
 
-# Android background service declaration
-services = DownloaderService:android/service.py
+# Background service with lowercase name
+services = downloader:service.py
 
-# Keep screen on during active downloads
 android.wakelock = True
 
 [buildozer]

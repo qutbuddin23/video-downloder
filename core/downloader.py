@@ -12,7 +12,6 @@ import threading
 import warnings
 from typing import Dict, Any, Optional
 import requests
-import yt_dlp
 from core.database import Database
 from core.storage_manager import format_bytes
 from core.paths import get_default_download_dir
@@ -209,6 +208,7 @@ class DownloadTask:
             "geo_bypass": True,
         }
 
+        import yt_dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([self.url])
 

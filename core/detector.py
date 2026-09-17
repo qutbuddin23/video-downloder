@@ -10,7 +10,6 @@ import warnings
 from typing import Dict, Any, List, Optional
 import requests
 from bs4 import BeautifulSoup
-import yt_dlp
 from core.storage_manager import format_bytes
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -58,6 +57,7 @@ class MediaDetector:
 
         # First attempt: yt-dlp extraction
         try:
+            import yt_dlp
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:

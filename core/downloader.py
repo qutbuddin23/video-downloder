@@ -9,12 +9,16 @@ import re
 import time
 import uuid
 import threading
+import warnings
 from typing import Dict, Any, Optional
 import requests
 import yt_dlp
 from core.database import Database
 from core.storage_manager import format_bytes
 from core.paths import get_default_download_dir
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
 
 def sanitize_filename(name: str) -> str:

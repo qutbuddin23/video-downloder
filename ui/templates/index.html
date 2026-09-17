@@ -10,9 +10,12 @@
     <div id="app-container">
         <!-- Top App Bar -->
         <header class="top-bar">
-            <div class="brand">
-                <div class="brand-icon">⚡</div>
-                <div class="brand-title">Universal Downloader</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <button id="btn-top-back" class="icon-btn" onclick="appGoBack()" style="display:none; font-size:18px; padding:4px 8px;" title="Go Back">←</button>
+                <div class="brand">
+                    <div class="brand-icon">⚡</div>
+                    <div class="brand-title">Universal Downloader</div>
+                </div>
             </div>
             <div class="top-actions">
                 <button class="icon-btn" title="Storage Status" onclick="switchTab('settings')">📊</button>
@@ -61,7 +64,7 @@
 
                 <!-- Video Preview & Format Selection Card -->
                 <div id="video-preview-card" class="card video-preview-card">
-                    <img id="preview-thumbnail" class="preview-thumbnail" src="" alt="Thumbnail" />
+                    <img id="preview-thumbnail" class="preview-thumbnail" src="" alt="Thumbnail" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" />
                     <div id="preview-title" class="preview-title">Video Title</div>
                     <div id="preview-meta" class="preview-meta">00:00 • 1080p</div>
 
@@ -70,9 +73,14 @@
                         <!-- Populated by JS -->
                     </div>
 
-                    <button id="btn-start-download" class="btn btn-primary" style="width:100%;">
-                        ⬇ Start Download
-                    </button>
+                    <div class="btn-row" style="margin-top:10px; gap:8px;">
+                        <button id="btn-watch-now" class="btn btn-secondary" style="flex:1;" onclick="watchAnalyzedVideo()">
+                            ▶ Watch Now
+                        </button>
+                        <button id="btn-start-download" class="btn btn-primary" style="flex:1.4;">
+                            ⬇ Download
+                        </button>
+                    </div>
                 </div>
             </section>
 
@@ -254,6 +262,9 @@
                 <video id="media-player" class="video-player" controls playsinline></video>
             </div>
         </div>
+
+        <!-- Floating Toast Notification -->
+        <div id="toast-message" class="toast-message" style="display:none;"></div>
     </div>
 
     <script src="/static/js/app.js"></script>

@@ -1,5 +1,7 @@
 /**
  * Universal Video Downloader - Modern Android Material 3 Frontend Logic
+ * Features: Deep stream sniffer, one-click auto download, encrypted vault,
+ * in-app video preview, robust thumbnail proxy, and back navigation.
  */
 
 let currentAnalysis = null;
@@ -9,6 +11,9 @@ let downloadFilter = 'all';
 let pollInterval = null;
 let enteredPin = '';
 let isPinSetupMode = false;
+let navigationHistory = ['home'];
+
+const DEFAULT_VIDEO_THUMB = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%236366F1"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h16V6H4zm6 2.5l6 3.5-6 3.5v-7z"/></svg>';
 
 document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
@@ -22,7 +27,18 @@ document.addEventListener('DOMContentLoaded', () => {
     loadStorageStats();
 });
 
-// --- Tab Navigation ---
+// --- Toast Notifications ---
+function showToast(message, duration = 3500) {
+    const toast = document.getElementById('toast-message');
+    if (!toast) return;
+    toast.textContent = message;
+    toast.style.display = 'flex';
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, duration);
+}
+
+// --- Navigation & Back Button ---
 function initNavigation() {
     const navItems = document.querySelectorAll('.nav-item');
     navItems.forEach(item => {
@@ -33,8 +49,20 @@ function initNavigation() {
     });
 }
 
-function switchTab(tabId) {
+function switchTab(tabId, pushHistory = true) {
     currentTab = tabId;
+    if (pushHistory) {
+        if (navigationHistory[navigationHistory.length - 1] !== tabId) {
+            navigationHistory.push(tabId);
+        }
+    }
+
+    // Update Back button visibility in Top Bar
+    const backBtn = document.getElementById('btn-top-back');
+    if (backBtn) {
+        backBtn.style.display = (tabId !== 'home' || navigationHistory.length > 1) ? 'inline-block' : 'none';
+    }
+
     document.querySelectorAll('.nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tabId);
     });
@@ -52,6 +80,53 @@ function switchTab(tabId) {
     }
 }
 
+function appGoBack() {
+    // 1. Close video player modal if open
+    const playerModal = document.getElementById('player-modal');
+    if (playerModal && playerModal.classList.contains('active')) {
+        closePlayer();
+        return;
+    }
+
+    // 2. Hide video preview card if visible on Home screen
+    const previewCard = document.getElementById('video-preview-card');
+    if (currentTab === 'home' && previewCard && previewCard.style.display !== 'none') {
+        previewCard.style.display = 'none';
+        return;
+    }
+
+    // 3. Step back in navigation history
+    if (navigationHistory.length > 1) {
+        navigationHistory.pop();
+        const prevTab = navigationHistory[navigationHistory.length - 1];
+        switchTab(prevTab, false);
+    } else if (currentTab !== 'home') {
+        switchTab('home', false);
+    }
+}
+
+// Bridge for Android Hardware Back Button
+window.onAndroidBackPressed = function() {
+    appGoBack();
+    return true;
+};
+
+// --- Thumbnail Proxy & Fallback Handler ---
+function handleThumbnailError(img) {
+    const orig = img.dataset.origSrc || img.src;
+    if (orig && !img.dataset.proxied && !orig.startsWith('data:') && !orig.includes('/api/thumbnail-proxy')) {
+        img.dataset.proxied = 'true';
+        img.src = '/api/thumbnail-proxy?url=' + encodeURIComponent(orig);
+    } else {
+        img.src = DEFAULT_VIDEO_THUMB;
+    }
+}
+
+function getSafeThumbnailUrl(url) {
+    if (!url) return DEFAULT_VIDEO_THUMB;
+    return `/api/thumbnail-proxy?url=${encodeURIComponent(url)}`;
+}
+
 // --- URL Analysis & Detection ---
 function initUrlAnalyzer() {
     const pasteBtn = document.getElementById('btn-paste');
@@ -63,11 +138,16 @@ function initUrlAnalyzer() {
         try {
             const text = await navigator.clipboard.readText();
             if (text) {
-                urlInput.value = text;
-                triggerAnalyze(text);
+                urlInput.value = text.trim();
+                triggerAnalyze(text.trim());
             }
         } catch (err) {
-            console.error('Clipboard access failed:', err);
+            // Fallback for Android WebView if clipboard permission prompt is required
+            const manual = prompt('Paste Video or Webpage Link:');
+            if (manual) {
+                urlInput.value = manual.trim();
+                triggerAnalyze(manual.trim());
+            }
         }
     });
 
@@ -129,7 +209,9 @@ function renderVideoPreview(data) {
     const meta = document.getElementById('preview-meta');
     const formatsContainer = document.getElementById('formats-list');
 
-    thumb.src = data.thumbnail || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600';
+    thumb.dataset.origSrc = data.thumbnail || '';
+    thumb.dataset.proxied = '';
+    thumb.src = getSafeThumbnailUrl(data.thumbnail);
     title.textContent = data.title;
     meta.textContent = `Duration: ${data.duration_str} • ${data.detected_count} Streams Found`;
 
@@ -157,6 +239,33 @@ function renderVideoPreview(data) {
     });
 
     previewCard.style.display = 'block';
+
+    // Show Back button when preview card is open
+    const backBtn = document.getElementById('btn-top-back');
+    if (backBtn) backBtn.style.display = 'inline-block';
+}
+
+// Watch Video Directly In-App Without Opening Website
+function watchAnalyzedVideo() {
+    if (!currentAnalysis) return;
+    let streamUrl = currentAnalysis.direct_url;
+    if (!streamUrl && selectedFormat && selectedFormat.direct_url) {
+        streamUrl = selectedFormat.direct_url;
+    }
+    if (!streamUrl && currentAnalysis.formats && currentAnalysis.formats.length > 0) {
+        streamUrl = currentAnalysis.formats[0].direct_url;
+    }
+
+    if (streamUrl) {
+        const modal = document.getElementById('player-modal');
+        const player = document.getElementById('media-player');
+        player.src = streamUrl;
+        modal.classList.add('active');
+        player.play().catch(e => console.log('Autoplay deferred:', e));
+    } else {
+        showToast('⚡ Starting download so you can watch in HD player!');
+        startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0]);
+    }
 }
 
 async function startDownload(analysis, fmt) {
@@ -176,6 +285,7 @@ async function startDownload(analysis, fmt) {
         });
         const result = await res.json();
         if (result.success) {
+            showToast(`⬇ Download started: ${analysis.title}`);
             switchTab('downloads');
         }
     } catch (err) {
@@ -231,10 +341,12 @@ function renderDownloadsList(items) {
             speedText = ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s`;
         }
 
+        const thumbSrc = getSafeThumbnailUrl(item.thumbnail);
+
         return `
             <div class="download-item">
                 <div class="dl-header">
-                    <img class="dl-thumb" src="${item.thumbnail || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100'}" />
+                    <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || ''}" />
                     <div class="dl-info">
                         <div class="dl-title">${item.title}</div>
                         <div class="dl-meta">${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}</div>
@@ -297,7 +409,7 @@ async function hideInVault(id) {
         let result = await res.json();
 
         if (!result.success && res.status === 403) {
-            const pin = prompt('Private Vault is locked. Enter PIN (Default: 7232):');
+            const pin = prompt('Private Vault is locked. Enter Master PIN:');
             if (pin) {
                 const unlockRes = await fetch('/api/vault/unlock', {
                     method: 'POST',
@@ -322,7 +434,7 @@ async function hideInVault(id) {
         }
 
         if (result.success) {
-            alert('🔒 Video encrypted with AES-256 and hidden in Private Vault.');
+            showToast('🔒 Video encrypted and moved into Private Vault!');
             loadDownloads();
             loadStorageStats();
         } else {
@@ -333,7 +445,7 @@ async function hideInVault(id) {
     }
 }
 
-// --- Private Vault ---
+// --- Private Vault (Secret PIN, No Plaintext Disclosure) ---
 function initVault() {
     document.querySelectorAll('.keypad-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -386,7 +498,8 @@ async function checkVaultStatus() {
             unlockedView.style.display = 'none';
         } else if (!stats.is_unlocked) {
             isPinSetupMode = false;
-            pinTitle.innerHTML = 'Enter Vault PIN<br><span style="font-size:12px; color:#818CF8; font-weight:normal;">(Password: <b>7232</b>)</span>';
+            // Secret PIN - never print password in UI text!
+            pinTitle.textContent = 'Enter Vault PIN';
             lockedView.style.display = 'block';
             unlockedView.style.display = 'none';
         } else {
@@ -405,17 +518,23 @@ function startOverlayPolling() {
             const res = await fetch('/api/overlay/latest-url');
             const data = await res.json();
             if (data && data.url) {
-                switchTab('home');
-                const urlInput = document.getElementById('url-input');
-                if (urlInput) {
-                    urlInput.value = data.url;
-                    triggerAnalyze(data.url);
+                if (data.auto_downloaded) {
+                    showToast(`⚡ Auto-Downloading: ${data.title || 'Video'}`);
+                    switchTab('downloads');
+                    loadDownloads();
+                } else {
+                    switchTab('home');
+                    const urlInput = document.getElementById('url-input');
+                    if (urlInput) {
+                        urlInput.value = data.url;
+                        triggerAnalyze(data.url);
+                    }
                 }
             }
         } catch (e) {
             // Ignore polling errors
         }
-    }, 1800);
+    }, 1500);
 }
 
 async function submitPin() {
@@ -455,21 +574,24 @@ async function loadVaultItems(stats) {
             return;
         }
 
-        list.innerHTML = items.map(item => `
-            <div class="download-item" style="border-left: 3px solid #EC4899;">
-                <div class="dl-header">
-                    <img class="dl-thumb" src="${item.thumbnail || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100'}" />
-                    <div class="dl-info">
-                        <div class="dl-title">🔒 ${item.title}</div>
-                        <div class="dl-meta">${item.file_size_str} • Encrypted AES-256</div>
+        list.innerHTML = items.map(item => {
+            const thumbSrc = getSafeThumbnailUrl(item.thumbnail);
+            return `
+                <div class="download-item" style="border-left: 3px solid #EC4899;">
+                    <div class="dl-header">
+                        <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || ''}" />
+                        <div class="dl-info">
+                            <div class="dl-title">🔒 ${item.title}</div>
+                            <div class="dl-meta">${item.file_size_str} • Encrypted AES-256</div>
+                        </div>
+                    </div>
+                    <div class="dl-actions">
+                        <button class="btn btn-primary btn-sm" onclick="playVaultVideo('${item.id}')">▶ Secure Play</button>
+                        <button class="btn btn-secondary btn-sm" onclick="restoreVaultVideo('${item.id}')">Restore</button>
                     </div>
                 </div>
-                <div class="dl-actions">
-                    <button class="btn btn-primary btn-sm" onclick="playVaultVideo('${item.id}')">▶ Secure Play</button>
-                    <button class="btn btn-secondary btn-sm" onclick="restoreVaultVideo('${item.id}')">Restore</button>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     } catch (err) {
         console.error('Error fetching vault items:', err);
     }
@@ -480,7 +602,7 @@ async function restoreVaultVideo(id) {
         const res = await fetch(`/api/vault/restore/${id}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
-            alert('Video restored to public Downloads!');
+            showToast('Video restored to public Downloads!');
             checkVaultStatus();
             loadStorageStats();
         }
@@ -495,7 +617,7 @@ function playVideo(downloadId) {
     const player = document.getElementById('media-player');
     player.src = `/media/stream/${downloadId}`;
     modal.classList.add('active');
-    player.play();
+    player.play().catch(e => console.log('Autoplay deferred:', e));
 }
 
 async function playVaultVideo(vaultId) {
@@ -507,7 +629,7 @@ async function playVaultVideo(vaultId) {
             const player = document.getElementById('media-player');
             player.src = data.stream_url;
             modal.classList.add('active');
-            player.play();
+            player.play().catch(e => console.log('Autoplay deferred:', e));
         }
     } catch (err) {
         alert('Failed to stream private video.');
@@ -547,7 +669,7 @@ async function cleanTempFiles() {
     try {
         const res = await fetch('/api/storage/clean-temp', { method: 'POST' });
         const data = await res.json();
-        alert(`Cleaned ${data.freed_str} of temporary and incomplete files.`);
+        showToast(`Cleaned ${data.freed_str} of temporary files.`);
         loadStorageStats();
     } catch (err) {
         alert('Error cleaning files.');

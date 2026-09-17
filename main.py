@@ -97,8 +97,10 @@ try:
                     from android.runnable import run_on_ui_thread
                     @run_on_ui_thread
                     def go_back_or_exit():
-                        if self.wv.canGoBack():
-                            self.wv.goBack()
+                        self.wv.evaluateJavascript(
+                            "if (window.onAndroidBackPressed) { window.onAndroidBackPressed(); } else if (history.length > 1) { history.back(); }",
+                            None
+                        )
                     go_back_or_exit()
                     return True
                 except Exception:

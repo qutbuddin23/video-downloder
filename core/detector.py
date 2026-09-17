@@ -6,11 +6,15 @@ Extracts video metadata and streams using yt-dlp and deep webpage sniffing
 
 import re
 import urllib.parse
+import warnings
 from typing import Dict, Any, List, Optional
 import requests
 from bs4 import BeautifulSoup
 import yt_dlp
 from core.storage_manager import format_bytes
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
 
 def format_duration(seconds: Optional[int]) -> str:

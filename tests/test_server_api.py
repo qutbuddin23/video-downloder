@@ -104,3 +104,22 @@ def test_overlay_toggle():
     res = json.loads(raw)
     assert res["success"] is True
     assert res["enabled"] is False
+
+
+def test_auto_download_endpoint_validation():
+    # Empty url should fail with 400
+    try:
+        make_request("/api/auto-download", method="POST", data={"url": ""})
+        assert False, "Should have failed with 400"
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+
+
+def test_thumbnail_proxy_validation():
+    # Empty url should fail with 400
+    try:
+        make_request("/api/thumbnail-proxy?url=")
+        assert False, "Should have failed with 400"
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+

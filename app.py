@@ -11,8 +11,13 @@ import time
 import mimetypes
 import threading
 import urllib.parse
+import warnings
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any
+import requests
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
 from core.paths import (
     get_base_data_dir,
@@ -41,7 +46,37 @@ storage = StorageManager(db)
 
 overlay_assistant: Optional[DesktopFloatingOverlay] = None
 latest_sniffed_url: Optional[str] = None
+latest_auto_download_title: Optional[str] = None
+latest_auto_download_id: Optional[str] = None
 http_server_instance: Optional[ThreadingHTTPServer] = None
+
+
+def trigger_auto_download(url: str):
+    global latest_auto_download_title, latest_auto_download_id
+    try:
+        url = url.strip()
+        result = detector.analyze_url(url)
+        if result.get("success"):
+            title = result.get("title", "Universal Video")
+            formats = result.get("formats", [])
+            best_format = formats[0]["format_id"] if formats else "best"
+            dl_id = downloader.create_download(
+                url=url,
+                title=title,
+                quality_label="Auto/Best",
+                format_selector=best_format,
+                direct_url=result.get("direct_url"),
+                thumbnail=result.get("thumbnail", ""),
+                duration=result.get("duration", 0),
+                auto_start=True
+            )
+            latest_auto_download_title = title
+            latest_auto_download_id = dl_id
+            print(f"🚀 [Auto-Download Started] {title} (ID: {dl_id})")
+            return True, title, dl_id
+    except Exception as e:
+        print(f"Auto-download error: {e}")
+    return False, "", ""
 
 
 class UniversalHTTPHandler(BaseHTTPRequestHandler):
@@ -236,11 +271,38 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_json(storage.get_storage_stats())
             return
 
+        if path == "/api/thumbnail-proxy":
+            img_url = query.get("url", [""])[0]
+            if not img_url:
+                self.send_error_json("Missing URL", 400)
+                return
+            try:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+                resp = requests.get(img_url, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    c_type = resp.headers.get("Content-Type", "image/jpeg")
+                    self.send_response(200)
+                    self.send_header("Content-Type", c_type)
+                    self.send_header("Content-Length", str(len(resp.content)))
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.send_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(resp.content)
+                    return
+            except Exception:
+                pass
+            self.send_error_json("Thumbnail fetch failed", 502)
+            return
+
         if path == "/api/overlay/latest-url":
-            global latest_sniffed_url
+            global latest_sniffed_url, latest_auto_download_title, latest_auto_download_id
             url = latest_sniffed_url
+            title = latest_auto_download_title
+            dl_id = latest_auto_download_id
             latest_sniffed_url = None
-            self.send_json({"url": url})
+            latest_auto_download_title = None
+            latest_auto_download_id = None
+            self.send_json({"url": url, "auto_downloaded": bool(title), "title": title, "download_id": dl_id})
             return
 
         if path == "/api/settings":
@@ -285,6 +347,15 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 duration=duration
             )
             self.send_json({"success": True, "download_id": download_id})
+            return
+
+        if path == "/api/auto-download":
+            url = body.get("url", "").strip()
+            if not url:
+                self.send_error_json("Empty URL provided", 400)
+                return
+            success, title, dl_id = trigger_auto_download(url)
+            self.send_json({"success": success, "title": title, "download_id": dl_id})
             return
 
         if path.startswith("/api/downloads/") and path.endswith("/pause"):
@@ -395,6 +466,7 @@ def on_floating_bubble_click(detected_url: str):
     print(f"[Floating Button Clicked] Detected URL: {detected_url}")
     if detected_url:
         latest_sniffed_url = detected_url
+        threading.Thread(target=trigger_auto_download, args=(detected_url,), daemon=True).start()
 
 
 def start_overlay():

@@ -31,7 +31,7 @@ from core.detector import MediaDetector
 from core.downloader import DownloadManager
 from core.vault import VaultManager
 from core.storage_manager import StorageManager, format_bytes
-from core.overlay import DesktopFloatingOverlay
+from core.overlay import FloatingOverlayManager, detect_video_url, get_android_clipboard_text, is_running_on_android
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "ui", "static")
@@ -44,7 +44,7 @@ downloader = DownloadManager(db)
 vault = VaultManager(db)
 storage = StorageManager(db)
 
-overlay_assistant: Optional[DesktopFloatingOverlay] = None
+overlay_assistant: Optional[FloatingOverlayManager] = None
 latest_sniffed_url: Optional[str] = None
 latest_auto_download_title: Optional[str] = None
 latest_auto_download_id: Optional[str] = None
@@ -190,6 +190,7 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
 
     # --- GET Routes ---
     def do_GET(self):
+        global overlay_assistant, latest_sniffed_url, latest_auto_download_title, latest_auto_download_id
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -295,7 +296,6 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/overlay/latest-url":
-            global latest_sniffed_url, latest_auto_download_title, latest_auto_download_id
             url = latest_sniffed_url
             title = latest_auto_download_title
             dl_id = latest_auto_download_id
@@ -309,10 +309,31 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_json(db.get_all_settings())
             return
 
+        if path == "/api/overlay/status":
+            can_draw = overlay_assistant.can_draw_overlays() if overlay_assistant else True
+            is_active = overlay_assistant.is_active() if overlay_assistant else False
+            self.send_json({
+                "enabled": is_active,
+                "can_draw": can_draw,
+                "is_android": is_running_on_android()
+            })
+            return
+
+        if path == "/api/clipboard/detect":
+            clip_text = get_android_clipboard_text() if is_running_on_android() else ""
+            video_url = detect_video_url(clip_text)
+            self.send_json({
+                "has_video": bool(video_url),
+                "url": video_url or "",
+                "raw_text": clip_text[:80] if clip_text else ""
+            })
+            return
+
         self.send_error_json("Not found", 404)
 
     # --- POST Routes ---
     def do_POST(self):
+        global overlay_assistant
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         body = self.read_json_body()
@@ -432,11 +453,17 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             if enabled:
                 start_overlay()
             else:
-                global overlay_assistant
                 if overlay_assistant:
                     overlay_assistant.stop()
                     overlay_assistant = None
             self.send_json({"success": True, "enabled": enabled})
+            return
+
+        if path == "/api/overlay/request-permission":
+            if overlay_assistant is None:
+                start_overlay()
+            res = overlay_assistant.open_overlay_settings() if overlay_assistant else False
+            self.send_json({"success": res})
             return
 
         self.send_error_json("Endpoint not found", 404)
@@ -473,7 +500,7 @@ def start_overlay():
     global overlay_assistant
     if overlay_assistant is None:
         try:
-            overlay_assistant = DesktopFloatingOverlay(on_trigger_callback=on_floating_bubble_click)
+            overlay_assistant = FloatingOverlayManager(on_trigger_callback=on_floating_bubble_click)
             overlay_assistant.start()
         except Exception as e:
             print(f"Overlay notice: {e}")

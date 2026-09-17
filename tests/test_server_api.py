@@ -123,3 +123,28 @@ def test_thumbnail_proxy_validation():
     except urllib.error.HTTPError as e:
         assert e.code == 400
 
+
+def test_clipboard_detect_endpoint():
+    status, raw = make_request("/api/clipboard/detect")
+    assert status == 200
+    resp = json.loads(raw)
+    assert "has_video" in resp
+    assert isinstance(resp["has_video"], bool)
+    assert "url" in resp
+
+
+def test_overlay_status_and_permission():
+    status_code, raw = make_request("/api/overlay/status")
+    assert status_code == 200
+    status = json.loads(raw)
+    assert "enabled" in status
+    assert "can_draw" in status
+    assert "is_android" in status
+
+    perm_code, perm_raw = make_request("/api/overlay/request-permission", method="POST")
+    assert perm_code == 200
+    perm = json.loads(perm_raw)
+    assert "success" in perm
+
+
+

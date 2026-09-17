@@ -615,3 +615,72 @@ body {
     from { opacity: 0; transform: translate(-50%, 10px); }
     to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* Floating Action Button (1-Click Auto Download) */
+.fab-auto-download {
+    position: fixed;
+    bottom: 74px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6366F1, #4F46E5);
+    color: #FFFFFF;
+    border: 2px solid #818CF8;
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 90;
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+    outline: none;
+}
+
+.fab-auto-download:active {
+    transform: scale(0.92);
+}
+
+.fab-auto-download.has-detected {
+    background: linear-gradient(135deg, #10B981, #059669);
+    border-color: #34D399;
+    animation: fabPulse 1.8s infinite;
+}
+
+.fab-icon {
+    font-size: 24px;
+    line-height: 1;
+}
+
+.fab-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #EF4444;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 800;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid #1E293B;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@keyframes fabPulse {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+    70% { box-shadow: 0 0 0 16px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+@keyframes pulseGlow {
+    0%, 100% { border-color: #818CF8; }
+    50% { border-color: #34D399; }
+}
+
+@keyframes pulseIcon {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+}

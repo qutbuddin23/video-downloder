@@ -205,3 +205,257 @@ class DesktopFloatingOverlay:
             except Exception:
                 pass
             time.sleep(1.5)
+
+
+def detect_video_url(text: str) -> Optional[str]:
+    """Extracts a valid video or media streaming URL from raw string."""
+    if not text:
+        return None
+    match = VIDEO_URL_PATTERN.search(text.strip())
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def get_android_clipboard_text() -> str:
+    """Reads system clipboard on Android devices via PyJNIus."""
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+        if activity:
+            Context = autoclass("android.content.Context")
+            clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE)
+            clip = clipboard.getPrimaryClip()
+            if clip and clip.getItemCount() > 0:
+                item = clip.getItemAt(0)
+                text = item.getText()
+                return str(text) if text else ""
+    except Exception as e:
+        print(f"[Clipboard] Android get text notice: {e}")
+    return ""
+
+
+def show_android_toast(message: str):
+    """Displays native Android Toast notification."""
+    try:
+        from jnius import autoclass
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def _toast():
+            try:
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                Toast = autoclass("android.widget.Toast")
+                String = autoclass("java.lang.String")
+                if activity:
+                    Toast.makeText(activity, String(message), Toast.LENGTH_SHORT).show()
+            except Exception as te:
+                print(f"[Toast] error: {te}")
+        _toast()
+    except Exception:
+        pass
+
+
+class AndroidFloatingOverlay:
+    """Native Android floating overlay bubble that draws over external apps."""
+    def __init__(self, on_trigger_callback: Optional[Callable[[str], None]] = None):
+        self.on_trigger_callback = on_trigger_callback
+        self.is_active = False
+        self.floating_view = None
+        self.window_manager = None
+        self.last_clipboard = ""
+
+    @staticmethod
+    def can_draw_overlays() -> bool:
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            Settings = autoclass("android.provider.Settings")
+            if activity:
+                return bool(Settings.canDrawOverlays(activity))
+        except Exception as e:
+            print(f"[Overlay] can_draw_overlays check: {e}")
+        return False
+
+    @staticmethod
+    def open_overlay_settings() -> bool:
+        try:
+            from jnius import autoclass
+            from android.runnable import run_on_ui_thread
+
+            @run_on_ui_thread
+            def _open():
+                try:
+                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                    activity = PythonActivity.mActivity
+                    if activity:
+                        Intent = autoclass("android.content.Intent")
+                        Uri = autoclass("android.net.Uri")
+                        Settings = autoclass("android.provider.Settings")
+                        intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + activity.getPackageName())
+                        )
+                        activity.startActivity(intent)
+                except Exception as e:
+                    print(f"[Overlay] open settings error: {e}")
+            _open()
+            return True
+        except Exception as e:
+            print(f"[Overlay] open_overlay_settings notice: {e}")
+            return False
+
+    def start(self):
+        if self.is_active:
+            return
+        if not self.can_draw_overlays():
+            print("[Overlay] Cannot start Android overlay: overlay permission not granted.")
+            return
+
+        try:
+            from jnius import autoclass, PythonJavaClass, java_method
+            from android.runnable import run_on_ui_thread
+
+            @run_on_ui_thread
+            def _mount_floating_view():
+                try:
+                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                    activity = PythonActivity.mActivity
+                    if not activity:
+                        return
+
+                    Context = autoclass("android.content.Context")
+                    WindowManager = autoclass("android.view.WindowManager")
+                    LayoutParams = autoclass("android.view.WindowManager$LayoutParams")
+                    PixelFormat = autoclass("android.graphics.PixelFormat")
+                    Gravity = autoclass("android.view.Gravity")
+                    Button = autoclass("android.widget.Button")
+                    Color = autoclass("android.graphics.Color")
+                    GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
+
+                    wm = activity.getSystemService(Context.WINDOW_SERVICE)
+                    self.window_manager = wm
+
+                    params = LayoutParams(
+                        160, 160,
+                        LayoutParams.TYPE_APPLICATION_OVERLAY,
+                        LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                    )
+                    params.gravity = Gravity.TOP | Gravity.START
+                    params.x = 20
+                    params.y = 500
+
+                    btn = Button(activity)
+                    btn.setText("⚡")
+                    btn.setTextSize(24)
+                    btn.setTextColor(Color.WHITE)
+
+                    shape = GradientDrawable()
+                    shape.setShape(GradientDrawable.OVAL)
+                    shape.setColor(Color.parseColor("#6366F1"))
+                    shape.setStroke(4, Color.parseColor("#818CF8"))
+                    btn.setBackground(shape)
+
+                    class BubbleClickListener(PythonJavaClass):
+                        __javainterfaces__ = ['android/view/View$OnClickListener']
+                        def __init__(self, overlay_ref):
+                            super().__init__()
+                            self.overlay_ref = overlay_ref
+
+                        @java_method('(Landroid/view/View;)V')
+                        def onClick(self, view):
+                            self.overlay_ref._on_bubble_clicked()
+
+                    self._click_listener = BubbleClickListener(self)
+                    btn.setOnClickListener(self._click_listener)
+
+                    wm.addView(btn, params)
+                    self.floating_view = btn
+                    self.is_active = True
+                    print("[Overlay] Android Floating Button successfully mounted!")
+                    show_android_toast("⚡ Universal Downloader: Floating Button Active!")
+                except Exception as e:
+                    print(f"[Overlay] Failed to mount Android floating button: {e}")
+
+            _mount_floating_view()
+            threading.Thread(target=self._clipboard_monitor_loop, daemon=True).start()
+        except Exception as e:
+            print(f"[Overlay] Android overlay start error: {e}")
+
+    def _on_bubble_clicked(self):
+        clip_text = get_android_clipboard_text()
+        video_url = detect_video_url(clip_text)
+        if video_url:
+            show_android_toast("⚡ Auto-Downloading detected video...")
+            if self.on_trigger_callback:
+                self.on_trigger_callback(video_url)
+        else:
+            show_android_toast("Universal Downloader: Copy a video link first, then tap ⚡")
+
+    def _clipboard_monitor_loop(self):
+        while self.is_active:
+            try:
+                clip_text = get_android_clipboard_text()
+                if clip_text and clip_text != self.last_clipboard:
+                    self.last_clipboard = clip_text
+                    video_url = detect_video_url(clip_text)
+                    if video_url:
+                        show_android_toast("🎬 Video Link Copied! Tap ⚡ to download.")
+            except Exception:
+                pass
+            time.sleep(2.0)
+
+    def stop(self):
+        self.is_active = False
+        if self.floating_view and self.window_manager:
+            try:
+                from android.runnable import run_on_ui_thread
+                @run_on_ui_thread
+                def _remove():
+                    try:
+                        self.window_manager.removeView(self.floating_view)
+                    except Exception:
+                        pass
+                    self.floating_view = None
+                _remove()
+            except Exception:
+                pass
+
+
+def is_running_on_android() -> bool:
+    import os
+    return "ANDROID_ARGUMENT" in os.environ or "ANDROID_PRIVATE" in os.environ or os.path.exists("/system/build.prop")
+
+
+class FloatingOverlayManager:
+    """Unified cross-platform floating assistant manager."""
+    def __init__(self, on_trigger_callback: Optional[Callable[[str], None]] = None):
+        self.on_trigger_callback = on_trigger_callback
+        if is_running_on_android():
+            self.overlay = AndroidFloatingOverlay(on_trigger_callback=on_trigger_callback)
+        else:
+            self.overlay = DesktopFloatingOverlay(on_trigger_callback=on_trigger_callback)
+
+    def start(self):
+        return self.overlay.start()
+
+    def stop(self):
+        return self.overlay.stop()
+
+    def is_active(self) -> bool:
+        return getattr(self.overlay, "is_active", False)
+
+    def can_draw_overlays(self) -> bool:
+        if hasattr(self.overlay, "can_draw_overlays"):
+            return self.overlay.can_draw_overlays()
+        return True
+
+    def open_overlay_settings(self) -> bool:
+        if hasattr(self.overlay, "open_overlay_settings"):
+            return self.overlay.open_overlay_settings()
+        return True
+

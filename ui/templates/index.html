@@ -27,6 +27,22 @@
         <main class="screens-viewport">
             <!-- Screen 1: Home (URL Paste & Sniffer) -->
             <section id="screen-home" class="screen active">
+                <!-- Auto-Detected Video Card (Zero-paste instant download) -->
+                <div id="auto-detect-card" class="card auto-detect-card" style="display:none; border: 2px solid #818CF8; background: linear-gradient(135deg, rgba(49, 46, 129, 0.45), rgba(30, 27, 75, 0.45)); box-shadow: 0 4px 20px rgba(99, 102, 241, 0.25);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                        <div style="display:flex; align-items:center; gap:10px; overflow:hidden;">
+                            <div class="pulse-icon" style="font-size:26px; flex-shrink:0;">⚡</div>
+                            <div style="overflow:hidden;">
+                                <div style="font-weight:700; font-size:14px; color:#EEF2FF;">Video Link Detected!</div>
+                                <div id="auto-detect-url-preview" style="font-size:11px; color:#94A3B8; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;"></div>
+                            </div>
+                        </div>
+                        <button id="btn-quick-auto-download" class="btn btn-primary" onclick="quickAutoDownloadDetected()" style="padding:8px 14px; font-weight:700; white-space:nowrap; flex-shrink:0;">
+                            ⬇ 1-Click Download
+                        </button>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-title"><span>📥</span> Paste Video or Page URL</div>
                     <div class="url-input-container">
@@ -191,12 +207,22 @@
                 <div class="card">
                     <div class="card-title"><span>⚙️</span> Preferences & Features</div>
 
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
-                        <div>
-                            <div style="font-size:13px; font-weight:600;">Floating Download Button</div>
-                            <div style="font-size:11px; color:#94A3B8;">Show floating assistant over external apps</div>
+                    <div style="margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div>
+                                <div style="font-size:13px; font-weight:600;">⚡ Floating Download Button</div>
+                                <div id="overlay-status-desc" style="font-size:11px; color:#94A3B8;">Auto-detect videos & 1-click download</div>
+                            </div>
+                            <input type="checkbox" id="toggle-floating-button" checked style="width:20px; height:20px; cursor:pointer;" />
                         </div>
-                        <input type="checkbox" id="toggle-floating-button" checked style="width:20px; height:20px; cursor:pointer;" />
+                        <div id="overlay-permission-box" style="margin-top:10px; padding:10px; background:rgba(99,102,241,0.12); border-radius:8px; border:1px solid rgba(99,102,241,0.3);">
+                            <div style="font-size:11px; color:#CBD5E1; margin-bottom:8px; line-height:1.4;">
+                                To show the floating bubble over other apps (YouTube, TikTok, Instagram, Chrome):
+                            </div>
+                            <button id="btn-request-overlay-perm" class="btn btn-secondary btn-sm" onclick="requestOverlayPermission()" style="width:100%; font-weight:600;">
+                                ⚙️ Enable "Appear on Top" in Android Settings
+                            </button>
+                        </div>
                     </div>
 
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
@@ -227,6 +253,12 @@
                 </div>
             </section>
         </main>
+
+        <!-- Floating Action Button (1-Click Auto Download) -->
+        <button id="fab-auto-download" class="fab-auto-download" onclick="onFabClicked()" title="1-Click Auto Download">
+            <span class="fab-icon">⚡</span>
+            <span id="fab-badge" class="fab-badge" style="display:none;">1</span>
+        </button>
 
         <!-- Bottom Navigation Bar -->
         <nav class="bottom-nav">

@@ -13,6 +13,12 @@ let enteredPin = '';
 let isPinSetupMode = false;
 let navigationHistory = ['home'];
 
+let detectedVideoUrl = null;
+let lastDetectedVideoUrl = null;
+let overlayPollInterval = null;
+let isCheckingClipboard = false;
+const VIDEO_URL_REGEX = /(https?:\/\/[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov)))/i;
+
 const DEFAULT_VIDEO_THUMB = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%236366F1"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h16V6H4zm6 2.5l6 3.5-6 3.5v-7z"/></svg>';
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -22,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initVault();
     initSettings();
     initBrowser();
+    initClipboardDetection();
     startDownloadPolling();
     startOverlayPolling();
     loadStorageStats();
@@ -676,15 +683,24 @@ async function cleanTempFiles() {
     }
 }
 
+// --- Settings & Floating Button Controls ---
 async function initSettings() {
     const overlayToggle = document.getElementById('toggle-floating-button');
     if (overlayToggle) {
         overlayToggle.addEventListener('change', async () => {
-            await fetch('/api/overlay/toggle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: overlayToggle.checked })
-            });
+            const isChecked = overlayToggle.checked;
+            try {
+                await fetch('/api/overlay/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: isChecked })
+                });
+                if (isChecked) {
+                    await checkOverlayPermissionStatus();
+                }
+            } catch (err) {
+                console.error('Toggle overlay error:', err);
+            }
         });
     }
 }
@@ -694,13 +710,259 @@ async function loadSettings() {
         const res = await fetch('/api/settings');
         const settings = await res.json();
         const toggle = document.getElementById('toggle-floating-button');
-        if (toggle) {
+        if (toggle && settings.floating_button_enabled !== undefined) {
             toggle.checked = settings.floating_button_enabled === 'true';
         }
+        await checkOverlayPermissionStatus();
     } catch (err) {
         console.error('Error loading settings:', err);
     }
 }
+
+async function checkOverlayPermissionStatus() {
+    try {
+        const res = await fetch('/api/overlay/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        const permBox = document.getElementById('overlay-permission-box');
+        const statusDesc = document.getElementById('overlay-status-desc');
+        const toggle = document.getElementById('toggle-floating-button');
+
+        if (toggle && typeof data.enabled === 'boolean') {
+            toggle.checked = data.enabled;
+        }
+
+        if (data.is_android) {
+            if (!data.can_draw) {
+                if (permBox) permBox.style.display = 'block';
+                if (statusDesc) {
+                    statusDesc.textContent = '⚠️ Tap below to enable "Appear on top"';
+                    statusDesc.style.color = '#F59E0B';
+                }
+            } else {
+                if (permBox) permBox.style.display = 'none';
+                if (statusDesc) {
+                    statusDesc.textContent = '✅ Active: Draws floating button over other apps';
+                    statusDesc.style.color = '#10B981';
+                }
+            }
+        } else {
+            if (permBox) permBox.style.display = 'none';
+            if (statusDesc) {
+                statusDesc.textContent = 'Always-On-Top floating bubble assistant';
+                statusDesc.style.color = '#94A3B8';
+            }
+        }
+    } catch (err) {
+        console.error('Overlay status check error:', err);
+    }
+}
+
+async function requestOverlayPermission() {
+    showToast('Opening Android Settings... Please enable "Allow display over other apps".', 5000);
+    try {
+        await fetch('/api/overlay/request-permission', { method: 'POST' });
+    } catch (err) {
+        console.error('Request permission error:', err);
+    }
+}
+
+// --- Zero-Paste Video Auto-Detection & Clipboard Monitoring ---
+function initClipboardDetection() {
+    // Check when window gains focus or switches to foreground
+    window.addEventListener('focus', () => {
+        checkClipboardForVideo();
+        checkOverlayPermissionStatus();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            checkClipboardForVideo();
+            checkOverlayPermissionStatus();
+        }
+    });
+
+    // Initial check after page renders
+    setTimeout(checkClipboardForVideo, 600);
+
+    // Continuous poll every 2.5s for seamless background copy detection
+    setInterval(checkClipboardForVideo, 2500);
+}
+
+async function checkClipboardForVideo() {
+    if (isCheckingClipboard) return;
+    isCheckingClipboard = true;
+
+    try {
+        let foundUrl = null;
+
+        // Method 1: Web Clipboard API (Browser / WebView)
+        if (navigator.clipboard && navigator.clipboard.readText) {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    const match = text.match(VIDEO_URL_REGEX);
+                    if (match) {
+                        foundUrl = match[1];
+                    }
+                }
+            } catch (_) {
+                // Clipboard read permission might require user interaction or prompt
+            }
+        }
+
+        // Method 2: Android Native System Clipboard via PyJNIus
+        if (!foundUrl) {
+            try {
+                const res = await fetch('/api/clipboard/detect');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.has_video && data.url) {
+                        foundUrl = data.url;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (foundUrl && foundUrl !== lastDetectedVideoUrl) {
+            handleVideoDetected(foundUrl);
+        }
+    } finally {
+        isCheckingClipboard = false;
+    }
+}
+
+function handleVideoDetected(url) {
+    if (!url) return;
+    detectedVideoUrl = url;
+    lastDetectedVideoUrl = url;
+
+    // 1. Show Auto-Detect Card on Home Screen
+    const card = document.getElementById('auto-detect-card');
+    const preview = document.getElementById('auto-detect-url-preview');
+    if (card && preview) {
+        preview.textContent = url;
+        card.style.display = 'block';
+    }
+
+    // 2. Pulse Floating Action Button with green glow & badge
+    const fab = document.getElementById('fab-auto-download');
+    const badge = document.getElementById('fab-badge');
+    if (fab) {
+        fab.classList.add('has-detected');
+    }
+    if (badge) {
+        badge.style.display = 'flex';
+    }
+
+    // 3. Pre-fill URL input if currently empty
+    const urlInput = document.getElementById('url-input');
+    if (urlInput && !urlInput.value.trim()) {
+        urlInput.value = url;
+    }
+}
+
+// 1-Click Auto Download Handler (from card)
+function quickAutoDownloadDetected() {
+    if (detectedVideoUrl) {
+        quickAutoDownloadUrl(detectedVideoUrl);
+    } else {
+        const urlInput = document.getElementById('url-input');
+        if (urlInput && urlInput.value.trim()) {
+            quickAutoDownloadUrl(urlInput.value.trim());
+        }
+    }
+}
+
+// 1-Click Auto Download Handler (from floating action button)
+async function onFabClicked() {
+    if (detectedVideoUrl) {
+        quickAutoDownloadUrl(detectedVideoUrl);
+        return;
+    }
+
+    showToast('🔍 Checking clipboard for video link...');
+    await checkClipboardForVideo();
+
+    if (detectedVideoUrl) {
+        quickAutoDownloadUrl(detectedVideoUrl);
+        return;
+    }
+
+    const urlInput = document.getElementById('url-input');
+    if (urlInput && urlInput.value.trim()) {
+        quickAutoDownloadUrl(urlInput.value.trim());
+        return;
+    }
+
+    showToast('📋 Copy a video link in any app, then tap ⚡ to download!');
+}
+
+async function quickAutoDownloadUrl(url) {
+    if (!url) return;
+    showToast('⚡ Auto-Detecting video & starting download...', 3500);
+
+    // Hide auto-detect card and remove pulse state
+    const card = document.getElementById('auto-detect-card');
+    if (card) card.style.display = 'none';
+    const fab = document.getElementById('fab-auto-download');
+    if (fab) fab.classList.remove('has-detected');
+    const badge = document.getElementById('fab-badge');
+    if (badge) badge.style.display = 'none';
+
+    detectedVideoUrl = null;
+
+    try {
+        const res = await fetch('/api/auto-download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: url })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`🚀 Auto-Downloading: ${data.title || 'Video'}`, 4000);
+            switchTab('downloads');
+            loadDownloads();
+        } else {
+            showToast('Sniffing page media streams...');
+            switchTab('home');
+            const urlInput = document.getElementById('url-input');
+            if (urlInput) urlInput.value = url;
+            triggerAnalyze(url);
+        }
+    } catch (err) {
+        showToast('Auto-download request failed.');
+        console.error(err);
+    }
+}
+
+// Polling for overlay events triggered outside the app (native overlay bubble)
+function startOverlayPolling() {
+    if (overlayPollInterval) clearInterval(overlayPollInterval);
+    overlayPollInterval = setInterval(async () => {
+        try {
+            const res = await fetch('/api/overlay/latest-url');
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.url) {
+                if (data.auto_downloaded) {
+                    showToast(`⚡ Background Auto-Download: ${data.title || 'Video'}`, 4000);
+                    if (currentTab === 'downloads') {
+                        loadDownloads();
+                    }
+                } else {
+                    handleVideoDetected(data.url);
+                }
+            }
+        } catch (_) {}
+    }, 1500);
+}
+
+// Export functions to window for HTML onclick attributes
+window.quickAutoDownloadDetected = quickAutoDownloadDetected;
+window.onFabClicked = onFabClicked;
+window.requestOverlayPermission = requestOverlayPermission;
+window.appGoBack = appGoBack;
 
 // --- In-App Browser ---
 function initBrowser() {

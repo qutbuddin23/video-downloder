@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 import pyaes
 from core.database import Database
 from core.storage_manager import format_bytes
+from core.paths import get_vault_dir, get_default_download_dir, get_temp_playback_dir
 
 
 class VaultManager:
@@ -19,7 +20,7 @@ class VaultManager:
 
     def __init__(self, db: Database):
         self.db = db
-        self.vault_dir = os.path.join(os.path.expanduser("~"), ".universal_downloader", "vault")
+        self.vault_dir = get_vault_dir()
         os.makedirs(self.vault_dir, exist_ok=True)
         # Create .nomedia so media scanners ignore this folder
         nomedia_path = os.path.join(self.vault_dir, ".nomedia")
@@ -169,7 +170,7 @@ class VaultManager:
 
         download_folder = self.db.get_setting(
             "download_folder",
-            os.path.join(os.path.expanduser("~"), "Downloads", "UniversalVideos")
+            get_default_download_dir()
         )
         os.makedirs(download_folder, exist_ok=True)
         restored_path = os.path.join(download_folder, vault_item["original_filename"])
@@ -218,7 +219,7 @@ class VaultManager:
             raise FileNotFoundError("Vault item not found.")
 
         enc_path = vault_item["encrypted_path"]
-        temp_dir = os.path.join(os.path.expanduser("~"), ".universal_downloader", "temp_playback")
+        temp_dir = get_temp_playback_dir()
         os.makedirs(temp_dir, exist_ok=True)
 
         ext = os.path.splitext(vault_item["original_filename"])[1] or ".mp4"

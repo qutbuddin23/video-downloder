@@ -14,6 +14,7 @@ import requests
 import yt_dlp
 from core.database import Database
 from core.storage_manager import format_bytes
+from core.paths import get_default_download_dir
 
 
 def sanitize_filename(name: str) -> str:
@@ -214,7 +215,7 @@ class DownloadManager:
         self.tasks: Dict[str, DownloadTask] = {}
         self.download_folder = self.db.get_setting(
             "download_folder",
-            os.path.join(os.path.expanduser("~"), "Downloads", "UniversalVideos")
+            get_default_download_dir()
         )
         os.makedirs(self.download_folder, exist_ok=True)
 

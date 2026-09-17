@@ -289,22 +289,47 @@ async function deleteDownload(id) {
 
 async function hideInVault(id) {
     try {
-        const res = await fetch('/api/vault/hide', {
+        let res = await fetch('/api/vault/hide', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ download_id: id })
         });
-        const result = await res.json();
+        let result = await res.json();
+
+        if (!result.success && res.status === 403) {
+            const pin = prompt('Private Vault is locked. Enter PIN (Default: 7232):');
+            if (pin) {
+                const unlockRes = await fetch('/api/vault/unlock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin: pin.trim() })
+                });
+                const unlockData = await unlockRes.json();
+                if (unlockData.success) {
+                    res = await fetch('/api/vault/hide', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ download_id: id })
+                    });
+                    result = await res.json();
+                } else {
+                    alert('Incorrect PIN. Video remains in downloads.');
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
         if (result.success) {
-            alert('Video encrypted and moved into Private Vault!');
+            alert('🔒 Video encrypted with AES-256 and hidden in Private Vault.');
             loadDownloads();
             loadStorageStats();
         } else {
-            alert(result.detail || 'Please unlock the Private Vault first.');
-            switchTab('vault');
+            alert(result.detail || result.error || 'Failed to hide video.');
         }
     } catch (err) {
-        alert('Vault error.');
+        alert('Vault error: ' + err.message);
     }
 }
 

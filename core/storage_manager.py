@@ -9,6 +9,7 @@ import shutil
 import hashlib
 from typing import Dict, Any, List
 from core.database import Database
+from core.paths import get_vault_dir, get_default_download_dir, get_base_data_dir
 
 def format_bytes(bytes_num: int) -> str:
     """Format bytes into readable string (KB, MB, GB)."""
@@ -28,9 +29,9 @@ class StorageManager:
         self.db = db
         self.download_folder = self.db.get_setting(
             "download_folder",
-            os.path.join(os.path.expanduser("~"), "Downloads", "UniversalVideos")
+            get_default_download_dir()
         )
-        self.vault_folder = os.path.join(os.path.expanduser("~"), ".universal_downloader", "vault")
+        self.vault_folder = get_vault_dir()
         os.makedirs(self.download_folder, exist_ok=True)
         os.makedirs(self.vault_folder, exist_ok=True)
 
@@ -53,7 +54,7 @@ class StorageManager:
     def get_storage_stats(self) -> Dict[str, Any]:
         """Returns comprehensive storage metrics for UI display."""
         # Disk usage for the drive holding downloads
-        disk_target = self.download_folder if os.path.exists(self.download_folder) else os.path.expanduser("~")
+        disk_target = self.download_folder if os.path.exists(self.download_folder) else get_base_data_dir()
         total_disk, used_disk, free_disk = shutil.disk_usage(disk_target)
 
         # Public downloads size

@@ -8,9 +8,15 @@ and trigger instant downloads.
 import sys
 import time
 import threading
-import tkinter as tk
 from typing import Optional, Callable
 import re
+
+try:
+    import tkinter as tk
+    TKINTER_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    tk = None
+    TKINTER_AVAILABLE = False
 
 VIDEO_URL_PATTERN = re.compile(
     r'(https?://[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov)))',
@@ -29,6 +35,9 @@ class DesktopFloatingOverlay:
         self.drag_y = 0
 
     def start(self):
+        if not TKINTER_AVAILABLE:
+            print("Desktop floating overlay not supported on mobile/Android (using native service).")
+            return
         if self.is_active:
             return
         self.is_active = True

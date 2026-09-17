@@ -8,15 +8,12 @@ import os
 import json
 import time
 from typing import Dict, List, Optional, Any
-
-DB_DIR = os.path.join(os.path.expanduser("~"), ".universal_downloader")
-os.makedirs(DB_DIR, exist_ok=True)
-DB_PATH = os.path.join(DB_DIR, "app_data.db")
+from core.paths import get_db_path, get_default_download_dir
 
 
 class Database:
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or get_db_path()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -96,7 +93,7 @@ class Database:
             default_settings = {
                 "default_quality": "best",
                 "default_format": "mp4",
-                "download_folder": os.path.join(os.path.expanduser("~"), "Downloads", "UniversalVideos"),
+                "download_folder": get_default_download_dir(),
                 "floating_button_enabled": "true",
                 "clipboard_monitor": "true",
                 "dark_mode": "true",

@@ -56,6 +56,13 @@ jobs:
             exit 1
           }
 
+      - name: Sign APK with Custom Developer Certificate
+        run: |
+          keytool -genkey -v -keystore release.keystore -alias appkey -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=UniversalDownloader, OU=Dev, O=AppStudio, L=Global, S=State, C=US"
+          for apk in bin/*.apk; do
+            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore release.keystore -storepass 123456 "$apk" appkey
+          done
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:

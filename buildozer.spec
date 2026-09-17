@@ -1,7 +1,7 @@
 [app]
 title = Universal Downloader
-package.name = universaldownloader
-package.domain = org.universal
+package.name = videomanager
+package.domain = com.qutbuddin
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,html,css,js,ttf,woff2,svg,json,db
 version = 1.0.0
@@ -12,8 +12,8 @@ requirements = python3,kivy,requests,beautifulsoup4,yt-dlp,pyjnius,pyaes
 orientation = portrait
 fullscreen = 0
 
-# Android permissions
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,SYSTEM_ALERT_WINDOW,FOREGROUND_SERVICE,POST_NOTIFICATIONS,WAKE_LOCK,READ_MEDIA_VIDEO,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,USE_BIOMETRIC
+# Clean permissions for modern Android (avoids Play Protect storage alarms)
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,SYSTEM_ALERT_WINDOW,FOREGROUND_SERVICE,POST_NOTIFICATIONS,WAKE_LOCK,READ_MEDIA_VIDEO
 
 # Targets arm64-v8a only for 2x faster build speed and modern device compatibility
 android.archs = arm64-v8a

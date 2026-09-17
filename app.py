@@ -272,14 +272,48 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_json(storage.get_storage_stats())
             return
 
+        if path == "/api/stream-proxy":
+            stream_url = query.get("url", [""])[0]
+            if not stream_url:
+                self.send_error_json("Missing stream URL", 400)
+                return
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "Accept": "*/*"
+                }
+                req_range = self.headers.get("Range")
+                if req_range:
+                    headers["Range"] = req_range
+
+                resp = requests.get(stream_url, headers=headers, stream=True, timeout=12)
+                self.send_response(resp.status_code)
+                for h in ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]:
+                    if h in resp.headers:
+                        self.send_header(h, resp.headers[h])
+                self.send_cors_headers()
+                self.end_headers()
+
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        self.wfile.write(chunk)
+                return
+            except Exception as se:
+                self.send_error_json(f"Stream proxy error: {se}", 502)
+                return
+
         if path == "/api/thumbnail-proxy":
             img_url = query.get("url", [""])[0]
             if not img_url:
                 self.send_error_json("Missing URL", 400)
                 return
             try:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-                resp = requests.get(img_url, headers=headers, timeout=8)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "Referer": "https://www.youtube.com/",
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+                }
+                resp = requests.get(img_url, headers=headers, timeout=8, verify=False)
                 if resp.status_code == 200:
                     c_type = resp.headers.get("Content-Type", "image/jpeg")
                     self.send_response(200)
@@ -466,6 +500,22 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_json({"success": res})
             return
 
+        if path == "/api/overlay/show":
+            if overlay_assistant is None:
+                start_overlay()
+            res = overlay_assistant.show_or_request_permission() if overlay_assistant else {
+                "active": False, "needs_permission": True, "message": "Overlay unavailable"
+            }
+            self.send_json({"success": True, **res})
+            return
+
+        if path.startswith("/api/downloads/") and path.endswith("/open"):
+            parts = path.split("/")
+            download_id = parts[3]
+            opened = downloader.open_in_player(download_id)
+            self.send_json({"success": opened})
+            return
+
         self.send_error_json("Endpoint not found", 404)
 
     # --- DELETE Routes ---
@@ -514,6 +564,11 @@ def run_server(host: str = "127.0.0.1", port: int = 5824):
         try:
             http_server_instance = ThreadingHTTPServer((host, port), UniversalHTTPHandler)
             print(f"Universal Downloader HTTP Server running at http://{host}:{port}")
+            if db.get_setting("floating_button_enabled", "true") == "true":
+                try:
+                    start_overlay()
+                except Exception as oe:
+                    print(f"Server overlay start notice: {oe}")
             http_server_instance.serve_forever()
             break
         except OSError as oe:

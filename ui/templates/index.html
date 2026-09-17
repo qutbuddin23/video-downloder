@@ -43,6 +43,22 @@
                     </div>
                 </div>
 
+                <!-- Floating Bubble External Launcher Card -->
+                <div class="card" style="border: 1px solid rgba(99, 102, 241, 0.35); background: linear-gradient(135deg, rgba(30, 27, 75, 0.5), rgba(15, 23, 42, 0.6));">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div style="font-size:24px;">⚡</div>
+                            <div>
+                                <div style="font-size:13px; font-weight:700; color:#EEF2FF;">Floating Download Bubble</div>
+                                <div style="font-size:11px; color:#94A3B8;">Float over YouTube, TikTok & Chrome to download anywhere</div>
+                            </div>
+                        </div>
+                        <button id="btn-launch-bubble-home" class="btn btn-primary btn-sm" onclick="showFloatingBubble()" style="padding:6px 12px; font-weight:700; white-space:nowrap;">
+                            🚀 Show Bubble
+                        </button>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-title"><span>📥</span> Paste Video or Page URL</div>
                     <div class="url-input-container">
@@ -223,6 +239,9 @@
                                 ⚙️ Enable "Appear on Top" in Android Settings
                             </button>
                         </div>
+                        <button id="btn-launch-bubble-settings" class="btn btn-primary btn-sm" onclick="showFloatingBubble()" style="width:100%; margin-top:10px; font-weight:700;">
+                            🚀 Show Floating Bubble on Screen
+                        </button>
                     </div>
 
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px;">
@@ -288,8 +307,11 @@
         <div id="player-modal" class="modal-overlay">
             <div class="modal-content">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                    <div style="font-size:14px; font-weight:700;">▶ Built-In Video Player</div>
-                    <button class="btn btn-secondary btn-sm" onclick="closePlayer()">✕ Close</button>
+                    <div style="font-size:14px; font-weight:700;">▶ Video Player</div>
+                    <div style="display:flex; gap:6px;">
+                        <button id="btn-player-open-external" class="btn btn-primary btn-sm" style="display:none; font-size:11px; padding:4px 8px;" onclick="openCurrentInExternalPlayer()">📱 Phone Player</button>
+                        <button class="btn btn-secondary btn-sm" onclick="closePlayer()">✕ Close</button>
+                    </div>
                 </div>
                 <video id="media-player" class="video-player" controls playsinline></video>
             </div>

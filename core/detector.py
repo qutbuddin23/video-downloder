@@ -125,7 +125,7 @@ class MediaDetector:
                         "has_audio": is_audio,
                         "has_video": True,
                         "direct_url": url,
-                        "download_selector": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]" if height else "best"
+                        "download_selector": f"best[height<={height}][ext=mp4][acodec!=none]/best[height<={height}][acodec!=none]/best[height<={height}]/best" if height else "best[ext=mp4][acodec!=none]/best[acodec!=none]/best"
                     }
             elif is_audio and not is_video:
                 # Audio only stream
@@ -176,6 +176,7 @@ class MediaDetector:
             "duration": duration,
             "duration_str": format_duration(duration),
             "source_url": original_url,
+            "direct_url": all_formats[0].get("direct_url", "") if all_formats else "",
             "is_protected": is_protected,
             "protection_reason": protection_reason,
             "formats": all_formats,

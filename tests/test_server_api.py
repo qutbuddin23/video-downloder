@@ -147,4 +147,29 @@ def test_overlay_status_and_permission():
     assert "success" in perm
 
 
+def test_overlay_show_endpoint():
+    status_code, raw = make_request("/api/overlay/show", method="POST")
+    assert status_code == 200
+    res = json.loads(raw)
+    assert res["success"] is True
+    assert "active" in res
+
+
+def test_stream_proxy_validation():
+    try:
+        make_request("/api/stream-proxy?url=")
+        assert False, "Should have failed with 400"
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
+
+
+def test_downloads_open_endpoint():
+    # Non-existent download returns success: False
+    code, raw = make_request("/api/downloads/non-existent-id/open", method="POST")
+    assert code == 200
+    res = json.loads(raw)
+    assert res["success"] is False
+
+
+
 

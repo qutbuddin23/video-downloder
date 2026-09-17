@@ -27,6 +27,69 @@ def sanitize_filename(name: str) -> str:
     return clean[:100] or "video"
 
 
+def scan_file_to_android_gallery(file_path: str):
+    """Notify Android MediaStore so the video appears in Gallery, Photos, and Downloads immediately."""
+    if not file_path or not os.path.exists(file_path):
+        return
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+        if activity:
+            MediaScannerConnection = autoclass("android.media.MediaScannerConnection")
+            String = autoclass("java.lang.String")
+            paths = [String(file_path)]
+            MediaScannerConnection.scanFile(activity.getApplicationContext(), paths, None, None)
+            print(f"[MediaScanner] Scanned {file_path} into Android MediaStore/Gallery")
+    except Exception as e:
+        print(f"[MediaScanner] Scan notice: {e}")
+
+
+def open_video_in_external_player(file_path: str) -> bool:
+    """Launches the video file in the phone's native video player (VLC, MX Player, Gallery)."""
+    if not file_path or not os.path.exists(file_path):
+        return False
+    try:
+        from jnius import autoclass
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def _open():
+            try:
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                if activity:
+                    Intent = autoclass("android.content.Intent")
+                    Uri = autoclass("android.net.Uri")
+                    File = autoclass("java.io.File")
+                    file_obj = File(file_path)
+
+                    intent = Intent(Intent.ACTION_VIEW)
+                    try:
+                        FileProvider = autoclass("androidx.core.content.FileProvider")
+                        uri = FileProvider.getUriForFile(
+                            activity.getApplicationContext(),
+                            activity.getPackageName() + ".fileprovider",
+                            file_obj
+                        )
+                        intent.setDataAndType(uri, "video/*")
+                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    except Exception:
+                        uri = Uri.fromFile(file_obj)
+                        intent.setDataAndType(uri, "video/*")
+
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(intent)
+                    print(f"[OpenPlayer] Launched external player for {file_path}")
+            except Exception as ex:
+                print(f"[OpenPlayer] Launch exception: {ex}")
+        _open()
+        return True
+    except Exception as e:
+        print(f"[OpenPlayer] Error: {e}")
+        return False
+
+
 class DownloadTask:
     def __init__(self, task_id: str, url: str, title: str, format_selector: str,
                  direct_url: Optional[str], output_dir: str, db: Database):
@@ -168,6 +231,12 @@ class DownloadTask:
                 self.task_id, status="completed", progress=100.0,
                 downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
             )
+            scan_file_to_android_gallery(final_path)
+            try:
+                from core.overlay import show_android_toast
+                show_android_toast(f"✅ Video saved to phone: {clean_title}")
+            except Exception:
+                pass
 
     def _download_via_ytdlp(self):
         clean_title = sanitize_filename(self.title)
@@ -197,9 +266,22 @@ class DownloadTask:
                         self.task_id, status="completed", progress=100.0,
                         downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
                     )
+                    scan_file_to_android_gallery(final_filename)
+                    try:
+                        from core.overlay import show_android_toast
+                        show_android_toast(f"✅ Video saved to phone: {clean_title}")
+                    except Exception:
+                        pass
+
+        # Ensure format does not require ffmpeg merging on Android
+        format_sel = self.format_selector or "best"
+        if "+" in format_sel:
+            format_sel = f"{format_sel}/best[ext=mp4][acodec!=none]/best[acodec!=none]/best"
+        else:
+            format_sel = f"{format_sel}[acodec!=none]/{format_sel}/best[ext=mp4][acodec!=none]/best"
 
         ydl_opts = {
-            "format": self.format_selector or "best",
+            "format": format_sel,
             "outtmpl": outtmpl,
             "progress_hooks": [hook],
             "quiet": True,
@@ -290,3 +372,10 @@ class DownloadManager:
             download_id, status="cancelled", progress=0.0,
             downloaded_bytes=0, total_bytes=0, speed=0.0
         )
+
+    def open_in_player(self, download_id: str) -> bool:
+        """Launches the downloaded video directly in an external video player or gallery."""
+        item = self.db.get_download(download_id)
+        if item and item.get("file_path") and os.path.exists(item["file_path"]):
+            return open_video_in_external_player(item["file_path"])
+        return False

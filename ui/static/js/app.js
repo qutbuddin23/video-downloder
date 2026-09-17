@@ -266,7 +266,11 @@ function watchAnalyzedVideo() {
     if (streamUrl) {
         const modal = document.getElementById('player-modal');
         const player = document.getElementById('media-player');
-        player.src = streamUrl;
+        const extBtn = document.getElementById('btn-player-open-external');
+        if (extBtn) extBtn.style.display = 'none';
+
+        // Route through local stream proxy to prevent 403 Forbidden on mobile
+        player.src = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}`;
         modal.classList.add('active');
         player.play().catch(e => console.log('Autoplay deferred:', e));
     } else {
@@ -374,6 +378,7 @@ function renderDownloadsList(items) {
                     ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">Cancel</button>` : ''}
                     ${isCompleted ? `
                         <button class="btn btn-primary btn-sm" onclick="playVideo('${item.id}')">▶ Play</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openInPhonePlayer('${item.id}')" title="Open in phone gallery or video player">📱 Open</button>
                         <button class="btn btn-secondary btn-sm" onclick="hideInVault('${item.id}')">🔒 Hide in Vault</button>
                         <button class="btn btn-danger btn-sm" onclick="deleteDownload('${item.id}')">Delete</button>
                     ` : ''}
@@ -618,13 +623,42 @@ async function restoreVaultVideo(id) {
     }
 }
 
-// --- Video Player Modal ---
+let currentPlayingDownloadId = null;
+
+// --- Video Player Modal & Phone Player Launcher ---
 function playVideo(downloadId) {
+    currentPlayingDownloadId = downloadId;
     const modal = document.getElementById('player-modal');
     const player = document.getElementById('media-player');
+    const extBtn = document.getElementById('btn-player-open-external');
+    if (extBtn) extBtn.style.display = 'inline-block';
+
     player.src = `/media/stream/${downloadId}`;
     modal.classList.add('active');
     player.play().catch(e => console.log('Autoplay deferred:', e));
+}
+
+async function openCurrentInExternalPlayer() {
+    if (currentPlayingDownloadId) {
+        await openInPhonePlayer(currentPlayingDownloadId);
+    }
+}
+
+async function openInPhonePlayer(downloadId) {
+    try {
+        showToast('📱 Opening video in your phone player / gallery...');
+        const res = await fetch(`/api/downloads/${downloadId}/open`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('✅ Opened in phone video player!');
+        } else {
+            showToast('Playing in built-in HD player...');
+            playVideo(downloadId);
+        }
+    } catch (err) {
+        console.error('Error opening external player:', err);
+        playVideo(downloadId);
+    }
 }
 
 async function playVaultVideo(vaultId) {
@@ -958,10 +992,28 @@ function startOverlayPolling() {
     }, 1500);
 }
 
+// Launch floating bubble onto screen
+async function showFloatingBubble() {
+    showToast('🚀 Bringing Floating Bubble onto screen...', 3000);
+    try {
+        const res = await fetch('/api/overlay/show', { method: 'POST' });
+        const data = await res.json();
+        if (data.message) {
+            showToast(data.message, 5000);
+        }
+        await checkOverlayPermissionStatus();
+    } catch (err) {
+        showToast('Failed to start floating bubble.');
+    }
+}
+
 // Export functions to window for HTML onclick attributes
 window.quickAutoDownloadDetected = quickAutoDownloadDetected;
 window.onFabClicked = onFabClicked;
 window.requestOverlayPermission = requestOverlayPermission;
+window.showFloatingBubble = showFloatingBubble;
+window.openInPhonePlayer = openInPhonePlayer;
+window.openCurrentInExternalPlayer = openCurrentInExternalPlayer;
 window.appGoBack = appGoBack;
 
 // --- In-App Browser ---

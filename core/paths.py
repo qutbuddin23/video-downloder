@@ -75,13 +75,34 @@ def get_temp_playback_dir() -> str:
     return temp_dir
 
 def get_default_download_dir() -> str:
-    """Return default public downloads directory."""
+    """Return default public downloads directory visible in Gallery and File Manager."""
     if is_android():
-        # Try standard external shared download directories
+        # 1. Try PyJNIus Android Environment.DIRECTORY_DOWNLOADS
+        try:
+            from jnius import autoclass
+            Environment = autoclass("android.os.Environment")
+            dl_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if dl_dir:
+                public_path = dl_dir.getAbsolutePath()
+                target_path = os.path.join(public_path, "UniversalVideos")
+                os.makedirs(target_path, exist_ok=True)
+                test_file = os.path.join(target_path, ".write_test")
+                with open(test_file, "w") as f:
+                    f.write("ok")
+                os.remove(test_file)
+                print(f"[Paths] Using public Android download path: {target_path}")
+                return target_path
+        except Exception as e:
+            print(f"[Paths] PyJNIus Environment download path check: {e}")
+
+        # 2. Try standard external shared download directories
         candidates = [
-            "/sdcard/Download/UniversalVideos",
             "/storage/emulated/0/Download/UniversalVideos",
-            os.path.join(get_base_data_dir(), "downloads")
+            "/storage/emulated/0/Download",
+            "/sdcard/Download/UniversalVideos",
+            "/sdcard/Download",
+            "/storage/emulated/0/Movies",
+            "/sdcard/Movies"
         ]
         for candidate in candidates:
             try:
@@ -90,9 +111,27 @@ def get_default_download_dir() -> str:
                 with open(test_file, "w") as f:
                     f.write("ok")
                 os.remove(test_file)
+                print(f"[Paths] Using candidate Android download path: {candidate}")
                 return candidate
             except Exception:
                 continue
+
+        # 3. Try Context.getExternalFilesDir (Always writable on all Android versions)
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if activity:
+                Environment = autoclass("android.os.Environment")
+                ext_dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                if ext_dir:
+                    ext_path = ext_dir.getAbsolutePath()
+                    os.makedirs(ext_path, exist_ok=True)
+                    print(f"[Paths] Using Context external files path: {ext_path}")
+                    return ext_path
+        except Exception as e:
+            print(f"[Paths] getExternalFilesDir notice: {e}")
+
     # Desktop standard downloads
     home = os.path.expanduser("~")
     desktop_dl = os.path.join(home, "Downloads", "UniversalVideos")

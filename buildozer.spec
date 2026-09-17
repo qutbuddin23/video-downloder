@@ -25,7 +25,7 @@ android.ndk = 25b
 services = downloader:service.py
 
 # Allow local HTTP traffic to localhost 127.0.0.1
-android.extra_manifest_application_arguments = android:usesCleartextTraffic="true"
+android.extra_manifest_application_arguments = ./extra_manifest_application_arguments.xml
 
 android.wakelock = True
 

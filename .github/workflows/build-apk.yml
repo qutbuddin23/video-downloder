@@ -58,3 +58,12 @@ jobs:
         with:
           name: UniversalDownloader-APK
           path: bin/*.apk
+
+      - name: Upload Build Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildozer-debug-logs
+          path: |
+            .buildozer/*.log
+            .buildozer/**/*.log

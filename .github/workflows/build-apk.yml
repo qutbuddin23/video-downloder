@@ -38,7 +38,7 @@ jobs:
             ~/.buildozer
             .buildozer
             ~/.gradle
-          key: ${{ runner.os }}-buildozer-v3-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-buildozer-stable-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             ${{ runner.os }}-buildozer-
 
@@ -50,13 +50,7 @@ jobs:
       - name: Build Android APK
         run: |
           export USE_CCACHE=1
-          # Remove previous dist folder to prevent package rename conflicts while keeping cached SDK/NDK
-          rm -rf .buildozer/android/platform/build-*/dists
-          yes | buildozer -v android debug || {
-            echo "================ BUILDOZER LOG SUMMARY ================"
-            find .buildozer -name "*.log" -exec tail -n 150 {} +
-            exit 1
-          }
+          yes | buildozer -v android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

@@ -40,7 +40,7 @@ try:
             from kivy.uix.label import Label
             root = BoxLayout(orientation='vertical')
             self.status_label = Label(
-                text="⚡ Universal Downloader\nLoading media engine...",
+                text="Universal Downloader\nInitializing media engine...",
                 font_size='18sp',
                 halign='center',
                 color=(0.9, 0.9, 1.0, 1.0)
@@ -67,47 +67,51 @@ try:
             return False
 
         def _update_status(self, text: str):
+            def _set(dt):
+                try:
+                    if hasattr(self, 'status_label') and self.status_label:
+                        self.status_label.text = text
+                except Exception:
+                    pass
+            Clock.schedule_once(_set, 0)
+
+        def ask_permissions_safe(self):
             try:
-                if self.status_label:
-                    self.status_label.text = text
-            except Exception:
-                pass
+                from android.permissions import request_permissions
+                from android.runnable import run_on_ui_thread
+
+                @run_on_ui_thread
+                def _do_ask():
+                    try:
+                        request_permissions([
+                            "android.permission.POST_NOTIFICATIONS",
+                            "android.permission.READ_MEDIA_VIDEO"
+                        ])
+                    except Exception as pe:
+                        print(f"[Launcher] Permission request note: {pe}")
+                _do_ask()
+            except Exception as e:
+                print(f"[Launcher] Permissions error: {e}")
 
         def _launch_android_webview_flow(self):
-            """Background worker thread: requests permissions, waits for server, then posts WebView to UI thread."""
+            """Background worker thread: waits for server, then posts WebView to UI thread."""
             try:
-                # 1. Request permissions on Android UI thread
-                try:
-                    from android.permissions import request_permissions
-                    from android.runnable import run_on_ui_thread
+                self._update_status("Universal Downloader\nStarting server...")
 
-                    @run_on_ui_thread
-                    def ask_permissions():
-                        try:
-                            request_permissions([
-                                "android.permission.POST_NOTIFICATIONS",
-                                "android.permission.READ_MEDIA_VIDEO"
-                            ])
-                        except Exception as p_err:
-                            print(f"[Android Launcher] Permission prompt note: {p_err}")
-
-                    ask_permissions()
-                except Exception as perm_err:
-                    print(f"[Android Launcher] Permission setup note: {perm_err}")
-
-                # 2. Wait for background HTTP server to bind
+                # 1. Wait for background HTTP server to bind
                 server_ok = self.wait_for_server(timeout=12.0)
                 if not server_ok:
-                    print("[Android Launcher] Server wait timed out, attempting WebView load anyway")
+                    self._update_status("Universal Downloader\nConnecting to media engine...")
                 else:
-                    print("[Android Launcher] HTTP server verified on 127.0.0.1:5824")
+                    self._update_status("Universal Downloader\nOpening interface...")
 
                 time.sleep(0.2)
 
-                # 3. Post WebView creation and attachment to Android UI Thread
+                # 2. Post WebView creation and attachment to Android UI Thread
                 self._attach_android_webview()
             except Exception as e:
                 print(f"[Android Launcher] Launch flow error: {e}")
+                self._update_status(f"Startup error:\n{e}")
 
         def _attach_android_webview(self):
             try:
@@ -149,16 +153,25 @@ try:
                         wv.setWebViewClient(WebViewClient())
                         wv.setWebChromeClient(WebChromeClient())
 
-                        # CRITICAL: Use addContentView instead of setContentView!
-                        # setContentView detaches SDLSurface from Kivy, causing eglSwapBuffers SIGSEGV.
-                        # addContentView layers the WebView on top without disturbing SDL2.
-                        params = LayoutParams(-1, -1)  # -1 = MATCH_PARENT
-                        activity.addContentView(wv, params)
+                        # Show full screen WebView as content view
+                        try:
+                            activity.setContentView(wv)
+                        except Exception as e_set:
+                            print(f"[Launcher] setContentView error ({e_set}), using addContentView fallback")
+                            params = LayoutParams(-1, -1)
+                            activity.addContentView(wv, params)
+
+                        wv.bringToFront()
+                        wv.requestFocus()
                         wv.loadUrl("http://127.0.0.1:5824")
                         print("[Android Launcher] Native WebView successfully loaded http://127.0.0.1:5824")
+
+                        # Request runtime permissions after UI is fully displayed
+                        Clock.schedule_once(lambda dt: self.ask_permissions_safe(), 2.0)
+
                     except Exception as err:
                         print(f"[Android Launcher] setup_webview_on_main exception: {err}")
-                        Clock.schedule_once(lambda dt: self._update_status(f"Starting interface...\n({err})"), 0)
+                        self._update_status(f"Starting interface error:\n{err}")
 
                 setup_webview_on_main()
             except Exception as e:

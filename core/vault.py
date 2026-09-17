@@ -1,18 +1,15 @@
 """
 Private Vault module for Universal Video Downloader.
-Provides genuine AES-256 encryption for private media, secure PIN/password
-authentication with PBKDF2 derivation, hidden storage, and streaming file encryption.
+Provides genuine AES-256 encryption using pyaes (pure Python, cross-platform,
+mobile-compatible) with PBKDF2 PIN authentication and storage tracking.
 """
 
 import os
 import time
 import uuid
-import base64
 import hashlib
 from typing import Dict, Any, List, Optional
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
+import pyaes
 from core.database import Database
 from core.storage_manager import format_bytes
 
@@ -86,19 +83,14 @@ class VaultManager:
             self.last_unlocked_time = time.time()
 
     def _derive_encryption_key(self, pin: str, salt: bytes) -> bytes:
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100000
-        )
-        return kdf.derive(pin.encode("utf-8"))
+        # 32 bytes = 256-bit AES key derived with 100,000 rounds of PBKDF2-HMAC-SHA256
+        return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, 100000, dklen=32)
 
     def hide_video(self, download_id: str) -> Dict[str, Any]:
-        """Encrypts a video and hides it in the Private Vault."""
+        """Encrypts a video with AES-256 and hides it in the Private Vault."""
         encryption_key = self._derived_key
         if not encryption_key:
-            # Derive write encryption key using stored salt and default/stored master pin
+            # Derive write encryption key using stored salt and master pin
             salt_hex = self.db.get_setting("vault_salt", "")
             if salt_hex:
                 salt = bytes.fromhex(salt_hex)
@@ -118,22 +110,26 @@ class VaultManager:
         enc_filename = f"{vault_id}.enc"
         dest_enc_path = os.path.join(self.vault_dir, enc_filename)
 
-        # AES-GCM encryption with random 96-bit nonce
-        aesgcm = AESGCM(encryption_key)
-        nonce = os.urandom(12)
+        # 16-byte random IV for CTR counter
+        iv_bytes = os.urandom(16)
+        iv_int = int.from_bytes(iv_bytes, "big")
+        counter = pyaes.Counter(initial_value=iv_int)
+        aes = pyaes.AESModeOfOperationCTR(encryption_key, counter=counter)
 
         file_size = os.path.getsize(src_path)
 
         # Stream encrypt to conserve memory
         with open(src_path, "rb") as fin, open(dest_enc_path, "wb") as fout:
-            # Write nonce first
-            fout.write(nonce)
-            # Read and encrypt
-            data = fin.read()
-            encrypted_data = aesgcm.encrypt(nonce, data, None)
-            fout.write(encrypted_data)
+            # Write 16-byte IV prefix
+            fout.write(iv_bytes)
+            while True:
+                chunk = fin.read(self.CHUNK_SIZE)
+                if not chunk:
+                    break
+                encrypted_chunk = aes.encrypt(chunk)
+                fout.write(encrypted_chunk)
 
-        # Securely remove original file
+        # Securely remove original public file
         try:
             os.remove(src_path)
         except Exception:
@@ -185,14 +181,17 @@ class VaultManager:
             restored_path = os.path.join(download_folder, f"{base}_{counter}{ext}")
             counter += 1
 
-        aesgcm = AESGCM(self._derived_key)
-        with open(enc_path, "rb") as fin:
-            nonce = fin.read(12)
-            ciphertext = fin.read()
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-
-        with open(restored_path, "wb") as fout:
-            fout.write(decrypted_data)
+        with open(enc_path, "rb") as fin, open(restored_path, "wb") as fout:
+            iv_bytes = fin.read(16)
+            iv_int = int.from_bytes(iv_bytes, "big")
+            counter = pyaes.Counter(initial_value=iv_int)
+            aes = pyaes.AESModeOfOperationCTR(self._derived_key, counter=counter)
+            while True:
+                chunk = fin.read(self.CHUNK_SIZE)
+                if not chunk:
+                    break
+                decrypted_chunk = aes.decrypt(chunk)
+                fout.write(decrypted_chunk)
 
         # Remove encrypted file
         try:
@@ -204,7 +203,7 @@ class VaultManager:
         self.db.delete_vault_item(vault_id)
         if vault_item.get("download_id"):
             self.db.set_download_vault_status(vault_item["download_id"], False)
-            self.db.update_download_filepath(vault_item["download_id"], restored_path, len(decrypted_data))
+            self.db.update_download_filepath(vault_item["download_id"], restored_path, os.path.getsize(restored_path))
 
         self.touch_session()
         return restored_path
@@ -225,14 +224,17 @@ class VaultManager:
         ext = os.path.splitext(vault_item["original_filename"])[1] or ".mp4"
         temp_path = os.path.join(temp_dir, f"playback_{vault_id}{ext}")
 
-        aesgcm = AESGCM(self._derived_key)
-        with open(enc_path, "rb") as fin:
-            nonce = fin.read(12)
-            ciphertext = fin.read()
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-
-        with open(temp_path, "wb") as fout:
-            fout.write(decrypted_data)
+        with open(enc_path, "rb") as fin, open(temp_path, "wb") as fout:
+            iv_bytes = fin.read(16)
+            iv_int = int.from_bytes(iv_bytes, "big")
+            counter = pyaes.Counter(initial_value=iv_int)
+            aes = pyaes.AESModeOfOperationCTR(self._derived_key, counter=counter)
+            while True:
+                chunk = fin.read(self.CHUNK_SIZE)
+                if not chunk:
+                    break
+                decrypted_chunk = aes.decrypt(chunk)
+                fout.write(decrypted_chunk)
 
         self.touch_session()
         return temp_path

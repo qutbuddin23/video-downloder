@@ -6,8 +6,8 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,html,css,js,ttf,woff2,svg,json,db
 version = 1.0.0
 
-# Requirements including Python 3, yt-dlp, cryptography, and network libs
-requirements = python3,requests,beautifulsoup4,yt-dlp,cryptography,pyjnius
+# Requirements: kivy is required by the p4a bootstrap, pyaes replaces cryptography for pure-python mobile AES
+requirements = python3,kivy,requests,beautifulsoup4,yt-dlp,pyjnius,pyaes
 
 orientation = portrait
 fullscreen = 0
@@ -15,9 +15,10 @@ fullscreen = 0
 # Android permissions
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,SYSTEM_ALERT_WINDOW,FOREGROUND_SERVICE,POST_NOTIFICATIONS,WAKE_LOCK,READ_MEDIA_VIDEO,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,USE_BIOMETRIC
 
-# Android API targeting modern Android 14 / 13 (API 33-34)
-android.api = 34
+# Stable Android API and NDK targets
+android.api = 33
 android.minapi = 26
+android.ndk = 25b
 android.archs = arm64-v8a, armeabi-v7a
 
 # Android background service declaration

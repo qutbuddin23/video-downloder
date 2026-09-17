@@ -31,12 +31,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
 
-      - name: Install Python Build Tools
+      - name: Install Buildozer & Cython
         run: |
           pip install --upgrade pip
-          pip install --upgrade buildozer Cython==0.29.36 virtualenv
+          pip install --upgrade "buildozer>=1.5.0" "Cython<3.0" virtualenv
 
-      - name: Build Android APK with Buildozer
+      - name: Build Android APK
         run: |
           yes | buildozer -v android debug
 

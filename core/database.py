@@ -17,10 +17,19 @@ class Database:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE;")
+            except Exception:
+                pass
+        try:
+            conn.execute("PRAGMA foreign_keys=ON;")
+        except Exception:
+            pass
         return conn
 
     def _init_db(self):

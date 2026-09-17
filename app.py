@@ -480,15 +480,21 @@ def start_overlay():
 
 
 def run_server(host: str = "127.0.0.1", port: int = 5824):
-    """Starts the multi-threaded standard library HTTP server."""
+    """Starts the multi-threaded standard library HTTP server with bind retry."""
     global http_server_instance
     ThreadingHTTPServer.allow_reuse_address = True
-    http_server_instance = ThreadingHTTPServer((host, port), UniversalHTTPHandler)
-    print(f"Universal Downloader HTTP Server running at http://{host}:{port}")
-    try:
-        http_server_instance.serve_forever()
-    except Exception as e:
-        print(f"Server stopped: {e}")
+    for attempt in range(5):
+        try:
+            http_server_instance = ThreadingHTTPServer((host, port), UniversalHTTPHandler)
+            print(f"Universal Downloader HTTP Server running at http://{host}:{port}")
+            http_server_instance.serve_forever()
+            break
+        except OSError as oe:
+            print(f"Server bind attempt {attempt+1} on {port} failed ({oe}), retrying in 0.5s...")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"Server stopped: {e}")
+            break
 
 
 def main():

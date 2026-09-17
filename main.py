@@ -21,20 +21,32 @@ try:
         def build(self):
             self.wv = None
             self.webview_attached = False
+            self.status_label = None
 
-            # 1. Start background standard library HTTP server
-            from app import run_server
-            server_thread = threading.Thread(target=run_server, daemon=True)
-            server_thread.start()
+            # 1. Start background standard library HTTP server with error protection
+            try:
+                from app import run_server
+                server_thread = threading.Thread(target=run_server, daemon=True)
+                server_thread.start()
+            except Exception as srv_err:
+                print(f"[Android Launcher] Server start error: {srv_err}")
 
             # 2. On Android, schedule background waiter and handle back button
             if platform == "android":
-                # Handle Android hardware back button
                 Window.bind(on_keyboard=self.on_android_back)
-                # Request permissions and start waiter on background worker thread
                 threading.Thread(target=self._launch_android_webview_flow, daemon=True).start()
 
-            return Widget()
+            from kivy.uix.boxlayout import BoxLayout
+            from kivy.uix.label import Label
+            root = BoxLayout(orientation='vertical')
+            self.status_label = Label(
+                text="⚡ Universal Downloader\nLoading media engine...",
+                font_size='18sp',
+                halign='center',
+                color=(0.9, 0.9, 1.0, 1.0)
+            )
+            root.add_widget(self.status_label)
+            return root
 
         def on_pause(self):
             # CRITICAL: Prevent Kivy from exiting when WebView takes focus or activity is paused
@@ -43,7 +55,7 @@ try:
         def on_resume(self):
             pass
 
-        def wait_for_server(self, host="127.0.0.1", port=5824, timeout=10.0):
+        def wait_for_server(self, host="127.0.0.1", port=5824, timeout=12.0):
             """Verify that the HTTP server is accepting connections (runs on background thread)."""
             start_time = time.time()
             while time.time() - start_time < timeout:
@@ -54,28 +66,42 @@ try:
                     time.sleep(0.15)
             return False
 
+        def _update_status(self, text: str):
+            try:
+                if self.status_label:
+                    self.status_label.text = text
+            except Exception:
+                pass
+
         def _launch_android_webview_flow(self):
             """Background worker thread: requests permissions, waits for server, then posts WebView to UI thread."""
             try:
-                # 1. Request permissions if available
+                # 1. Request permissions on Android UI thread
                 try:
-                    from android.permissions import request_permissions, Permission
-                    request_permissions([
-                        Permission.INTERNET,
-                        Permission.READ_MEDIA_VIDEO,
-                        Permission.POST_NOTIFICATIONS
-                    ])
+                    from android.permissions import request_permissions
+                    from android.runnable import run_on_ui_thread
+
+                    @run_on_ui_thread
+                    def ask_permissions():
+                        try:
+                            request_permissions([
+                                "android.permission.POST_NOTIFICATIONS",
+                                "android.permission.READ_MEDIA_VIDEO"
+                            ])
+                        except Exception as p_err:
+                            print(f"[Android Launcher] Permission prompt note: {p_err}")
+
+                    ask_permissions()
                 except Exception as perm_err:
-                    print(f"[Android Launcher] Permission request note: {perm_err}")
+                    print(f"[Android Launcher] Permission setup note: {perm_err}")
 
-                # 2. Wait for background HTTP server to start accepting requests
-                server_ok = self.wait_for_server(timeout=10.0)
+                # 2. Wait for background HTTP server to bind
+                server_ok = self.wait_for_server(timeout=12.0)
                 if not server_ok:
-                    print("[Android Launcher] Warning: HTTP server wait timed out, attempting WebView attach anyway")
+                    print("[Android Launcher] Server wait timed out, attempting WebView load anyway")
                 else:
-                    print("[Android Launcher] HTTP server ready at 127.0.0.1:5824")
+                    print("[Android Launcher] HTTP server verified on 127.0.0.1:5824")
 
-                # Small delay to ensure activity is fully rendered
                 time.sleep(0.2)
 
                 # 3. Post WebView creation and attachment to Android UI Thread
@@ -132,6 +158,7 @@ try:
                         print("[Android Launcher] Native WebView successfully loaded http://127.0.0.1:5824")
                     except Exception as err:
                         print(f"[Android Launcher] setup_webview_on_main exception: {err}")
+                        Clock.schedule_once(lambda dt: self._update_status(f"Starting interface...\n({err})"), 0)
 
                 setup_webview_on_main()
             except Exception as e:

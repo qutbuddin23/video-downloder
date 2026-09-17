@@ -38,8 +38,9 @@ jobs:
             ~/.buildozer
             .buildozer
             ~/.gradle
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}
+          key: ${{ runner.os }}-buildozer-v2-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
+            ${{ runner.os }}-buildozer-v2-
             ${{ runner.os }}-buildozer-
 
       - name: Install Buildozer & Cython
@@ -55,13 +56,6 @@ jobs:
             find .buildozer -name "*.log" -exec tail -n 150 {} +
             exit 1
           }
-
-      - name: Sign APK with Custom Developer Certificate
-        run: |
-          keytool -genkey -v -keystore release.keystore -alias appkey -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=UniversalDownloader, OU=Dev, O=AppStudio, L=Global, S=State, C=US"
-          for apk in bin/*.apk; do
-            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore release.keystore -storepass 123456 "$apk" appkey
-          done
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

@@ -9,7 +9,6 @@ import urllib.parse
 import warnings
 from typing import Dict, Any, List, Optional
 import requests
-from bs4 import BeautifulSoup
 from core.storage_manager import format_bytes
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -195,6 +194,7 @@ class MediaDetector:
         try:
             resp = requests.get(url, headers=self.DEFAULT_HEADERS, timeout=12)
             html = resp.text
+            from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "html.parser")
         except Exception as e:
             return {

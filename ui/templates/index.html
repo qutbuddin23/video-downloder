@@ -128,6 +128,15 @@
 
             <!-- Screen 3: Downloads Manager -->
             <section id="screen-downloads" class="screen">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:0 4px;">
+                    <div style="font-size:13px; font-weight:700; color:#E2E8F0;">
+                        Downloads (<span id="dl-summary-count">0</span>)
+                    </div>
+                    <div id="dl-active-count-badge" style="font-size:11px; color:#818CF8; font-weight:600;">
+                        0 Active
+                    </div>
+                </div>
+
                 <div class="segmented-control">
                     <button class="segment-btn active" data-filter="all">All</button>
                     <button class="segment-btn" data-filter="active">Active</button>
@@ -289,9 +298,10 @@
                 <span class="nav-icon">🌐</span>
                 <span>Browser</span>
             </button>
-            <button class="nav-item" data-tab="downloads">
+            <button class="nav-item" data-tab="downloads" style="position:relative;">
                 <span class="nav-icon">📥</span>
                 <span>Downloads</span>
+                <span id="nav-downloads-count" style="display:none; position:absolute; top:2px; right:14px; background:#6366F1; color:#fff; border-radius:10px; font-size:10px; min-width:16px; text-align:center; padding:1px 4px; font-weight:bold;">0</span>
             </button>
             <button class="nav-item" data-tab="vault">
                 <span class="nav-icon">🔒</span>
@@ -314,6 +324,10 @@
                     </div>
                 </div>
                 <video id="media-player" class="video-player" controls playsinline></video>
+                <div id="player-error-msg" style="display:none; padding:12px; margin-top:10px; background:rgba(239, 68, 68, 0.15); border:1px solid #EF4444; border-radius:8px; font-size:12px; color:#FCA5A5; text-align:center;">
+                    <div style="margin-bottom:8px;">⚠️ WebView cannot decode this stream.</div>
+                    <button class="btn btn-primary btn-sm" onclick="openCurrentInExternalPlayer()" style="font-size:12px;">📱 Play in Phone Video Player (VLC / MX / Gallery)</button>
+                </div>
             </div>
         </div>
 

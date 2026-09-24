@@ -258,6 +258,63 @@ def show_android_toast(message: str):
         pass
 
 
+try:
+    from jnius import autoclass, PythonJavaClass, java_method
+    HAS_PYJNIUS = True
+except (ImportError, ModuleNotFoundError):
+    HAS_PYJNIUS = False
+    PythonJavaClass = object
+    def java_method(sig):
+        return lambda f: f
+
+
+class AndroidBubbleTouchListener(PythonJavaClass):
+    """Module-level touch listener for Android floating overlay view."""
+    __javainterfaces__ = ['android/view/View$OnTouchListener']
+
+    def __init__(self, overlay_ref, wm_ref, params_ref, view_ref):
+        super().__init__()
+        self.overlay_ref = overlay_ref
+        self.wm_ref = wm_ref
+        self.params_ref = params_ref
+        self.view_ref = view_ref
+        self.initial_x = 0
+        self.initial_y = 0
+        self.initial_touch_x = 0.0
+        self.initial_touch_y = 0.0
+        self.is_click = False
+
+    @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
+    def onTouch(self, view, event):
+        try:
+            from jnius import autoclass
+            MotionEvent = autoclass('android.view.MotionEvent')
+            action = event.getAction()
+            if action == MotionEvent.ACTION_DOWN:
+                self.initial_x = self.params_ref.x
+                self.initial_y = self.params_ref.y
+                self.initial_touch_x = event.getRawX()
+                self.initial_touch_y = event.getRawY()
+                self.is_click = True
+                return True
+            elif action == MotionEvent.ACTION_MOVE:
+                dx = int(event.getRawX() - self.initial_touch_x)
+                dy = int(event.getRawY() - self.initial_touch_y)
+                if abs(dx) > 12 or abs(dy) > 12:
+                    self.is_click = False
+                self.params_ref.x = self.initial_x + dx
+                self.params_ref.y = self.initial_y + dy
+                self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
+                return True
+            elif action == MotionEvent.ACTION_UP:
+                if self.is_click:
+                    self.overlay_ref._on_bubble_clicked()
+                return True
+        except Exception as te:
+            print(f"[OverlayTouch] Motion error: {te}")
+        return False
+
+
 class AndroidFloatingOverlay:
     """Native Android floating overlay bubble that draws over external apps."""
     def __init__(self, on_trigger_callback: Optional[Callable[[str], None]] = None):
@@ -266,6 +323,7 @@ class AndroidFloatingOverlay:
         self.floating_view = None
         self.window_manager = None
         self.last_clipboard = ""
+        self._touch_listener = None
 
     @staticmethod
     def can_draw_overlays() -> bool:
@@ -295,11 +353,16 @@ class AndroidFloatingOverlay:
                         Intent = autoclass("android.content.Intent")
                         Uri = autoclass("android.net.Uri")
                         Settings = autoclass("android.provider.Settings")
-                        intent = Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:" + activity.getPackageName())
-                        )
-                        activity.startActivity(intent)
+                        try:
+                            intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:" + activity.getPackageName())
+                            )
+                            activity.startActivity(intent)
+                        except Exception:
+                            # Fallback without package URI if device doesn't support package-specific overlay intent
+                            intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                            activity.startActivity(intent)
                 except Exception as e:
                     print(f"[Overlay] open settings error: {e}")
             _open()
@@ -316,7 +379,7 @@ class AndroidFloatingOverlay:
             return
 
         try:
-            from jnius import autoclass, PythonJavaClass, java_method
+            from jnius import autoclass
             from android.runnable import run_on_ui_thread
 
             @run_on_ui_thread
@@ -333,7 +396,7 @@ class AndroidFloatingOverlay:
                     LayoutParams = autoclass("android.view.WindowManager$LayoutParams")
                     PixelFormat = autoclass("android.graphics.PixelFormat")
                     Gravity = autoclass("android.view.Gravity")
-                    Button = autoclass("android.widget.Button")
+                    TextView = autoclass("android.widget.TextView")
                     Color = autoclass("android.graphics.Color")
                     GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
 
@@ -351,9 +414,10 @@ class AndroidFloatingOverlay:
                     params.x = 24
                     params.y = 450
 
-                    btn = Button(app_context)
+                    btn = TextView(app_context)
                     btn.setText("⚡")
                     btn.setTextSize(26)
+                    btn.setGravity(Gravity.CENTER)
                     btn.setTextColor(Color.WHITE)
 
                     shape = GradientDrawable()
@@ -362,50 +426,7 @@ class AndroidFloatingOverlay:
                     shape.setStroke(4, Color.parseColor("#818CF8"))
                     btn.setBackground(shape)
 
-                    class BubbleTouchListener(PythonJavaClass):
-                        __javainterfaces__ = ['android/view/View$OnTouchListener']
-                        def __init__(self, overlay_ref, wm_ref, params_ref, view_ref):
-                            super().__init__()
-                            self.overlay_ref = overlay_ref
-                            self.wm_ref = wm_ref
-                            self.params_ref = params_ref
-                            self.view_ref = view_ref
-                            self.initial_x = 0
-                            self.initial_y = 0
-                            self.initial_touch_x = 0.0
-                            self.initial_touch_y = 0.0
-                            self.is_click = False
-
-                        @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
-                        def onTouch(self, view, event):
-                            try:
-                                MotionEvent = autoclass('android.view.MotionEvent')
-                                action = event.getAction()
-                                if action == MotionEvent.ACTION_DOWN:
-                                    self.initial_x = self.params_ref.x
-                                    self.initial_y = self.params_ref.y
-                                    self.initial_touch_x = event.getRawX()
-                                    self.initial_touch_y = event.getRawY()
-                                    self.is_click = True
-                                    return True
-                                elif action == MotionEvent.ACTION_MOVE:
-                                    dx = int(event.getRawX() - self.initial_touch_x)
-                                    dy = int(event.getRawY() - self.initial_touch_y)
-                                    if abs(dx) > 12 or abs(dy) > 12:
-                                        self.is_click = False
-                                    self.params_ref.x = self.initial_x + dx
-                                    self.params_ref.y = self.initial_y + dy
-                                    self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
-                                    return True
-                                elif action == MotionEvent.ACTION_UP:
-                                    if self.is_click:
-                                        self.overlay_ref._on_bubble_clicked()
-                                    return True
-                            except Exception as te:
-                                print(f"[OverlayTouch] Motion error: {te}")
-                            return False
-
-                    self._touch_listener = BubbleTouchListener(self, wm, params, btn)
+                    self._touch_listener = AndroidBubbleTouchListener(self, wm, params, btn)
                     btn.setOnTouchListener(self._touch_listener)
 
                     wm.addView(btn, params)

@@ -57,6 +57,10 @@ def test_download_task_record(temp_db):
     paused_rec = db.get_download(dl_id)
     assert paused_rec["status"] == "paused"
 
+    # Test resume
+    dm.resume_download(dl_id)
+    assert dl_id in dm.tasks
+
     # Test cancel
     dm.cancel_download(dl_id)
     cancelled_rec = db.get_download(dl_id)
@@ -65,3 +69,12 @@ def test_download_task_record(temp_db):
     # Ensure background thread is terminated before fixture teardown
     if dl_id in dm.tasks and dm.tasks[dl_id].thread:
         dm.tasks[dl_id].thread.join(timeout=1.0)
+
+
+def test_android_notification_helper_graceful():
+    from core.downloader import AndroidNotificationHelper
+    # Verify non-Android graceful degradation (no unhandled exceptions)
+    AndroidNotificationHelper.update_progress(1234, "Test Video", 50.0, "2.5 MB/s")
+    AndroidNotificationHelper.show_complete(1234, "Test Video")
+    AndroidNotificationHelper.cancel(1234)
+

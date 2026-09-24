@@ -45,6 +45,111 @@ def scan_file_to_android_gallery(file_path: str):
         print(f"[MediaScanner] Scan notice: {e}")
 
 
+class AndroidNotificationHelper:
+    """Live Android status bar notifications with real-time download progress bar."""
+    CHANNEL_ID = "universal_downloader_channel"
+    CHANNEL_NAME = "Video Downloads"
+    _channel_created = False
+
+    @classmethod
+    def _init_channel(cls, context):
+        if cls._channel_created or not context:
+            return
+        try:
+            from jnius import autoclass
+            Build = autoclass("android.os.Build")
+            if Build.VERSION.SDK_INT >= 26:
+                NotificationChannel = autoclass("android.app.NotificationChannel")
+                NotificationManager = autoclass("android.app.NotificationManager")
+                Context = autoclass("android.content.Context")
+                nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                channel = NotificationChannel(
+                    cls.CHANNEL_ID,
+                    cls.CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                channel.setDescription("Progress and completion of video downloads")
+                nm.createNotificationChannel(channel)
+            cls._channel_created = True
+        except Exception as e:
+            print(f"[Notifications] Channel init notice: {e}")
+
+    @classmethod
+    def update_progress(cls, notification_id: int, title: str, progress: float, speed_str: str = ""):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if not activity:
+                return
+            context = activity.getApplicationContext()
+            cls._init_channel(context)
+
+            NotificationManager = autoclass("android.app.NotificationManager")
+            Notification = autoclass("android.app.Notification")
+            Context = autoclass("android.content.Context")
+            nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+
+            builder = Notification.Builder(context, cls.CHANNEL_ID)
+            builder.setContentTitle(f"⬇ {title[:40]}")
+            sub_text = f"Downloading: {progress:.1f}%"
+            if speed_str:
+                sub_text += f" • {speed_str}"
+            builder.setContentText(sub_text)
+            builder.setSmallIcon(context.getApplicationInfo().icon)
+            builder.setProgress(100, int(progress), False)
+            builder.setOngoing(True)
+            builder.setOnlyAlertOnce(True)
+
+            nm.notify(notification_id, builder.build())
+        except Exception:
+            pass
+
+    @classmethod
+    def show_complete(cls, notification_id: int, title: str):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if not activity:
+                return
+            context = activity.getApplicationContext()
+            cls._init_channel(context)
+
+            NotificationManager = autoclass("android.app.NotificationManager")
+            Notification = autoclass("android.app.Notification")
+            Context = autoclass("android.content.Context")
+            nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+
+            builder = Notification.Builder(context, cls.CHANNEL_ID)
+            builder.setContentTitle("✅ Download Complete!")
+            builder.setContentText(title[:50])
+            builder.setSmallIcon(context.getApplicationInfo().icon)
+            builder.setProgress(0, 0, False)
+            builder.setOngoing(False)
+            builder.setAutoCancel(True)
+
+            nm.notify(notification_id, builder.build())
+        except Exception:
+            pass
+
+    @classmethod
+    def cancel(cls, notification_id: int):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if not activity:
+                return
+            context = activity.getApplicationContext()
+            NotificationManager = autoclass("android.app.NotificationManager")
+            Context = autoclass("android.content.Context")
+            nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+            nm.cancel(notification_id)
+        except Exception:
+            pass
+
+
 def open_video_in_external_player(file_path: str) -> bool:
     """Launches the video file in the phone's native video player (VLC, MX Player, Gallery)."""
     if not file_path or not os.path.exists(file_path):
@@ -94,6 +199,7 @@ class DownloadTask:
     def __init__(self, task_id: str, url: str, title: str, format_selector: str,
                  direct_url: Optional[str], output_dir: str, db: Database):
         self.task_id = task_id
+        self.notification_id = abs(hash(task_id)) % 100000 + 1
         self.url = url
         self.title = title
         self.format_selector = format_selector
@@ -116,6 +222,7 @@ class DownloadTask:
 
     def pause(self):
         self.is_paused = True
+        AndroidNotificationHelper.cancel(self.notification_id)
 
     def resume(self):
         self.is_paused = False
@@ -124,6 +231,7 @@ class DownloadTask:
     def cancel(self):
         self.is_cancelled = True
         self.is_paused = False
+        AndroidNotificationHelper.cancel(self.notification_id)
 
     def _run(self):
         try:
@@ -135,7 +243,7 @@ class DownloadTask:
             )
 
             # Strategy 1: Direct HTTP download if direct_url is a direct file (.mp4, .webm)
-            if self.direct_url and any(self.direct_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov"]):
+            if self.direct_url and any(self.direct_url.lower().endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov"]):
                 self._download_direct_http()
             else:
                 # Strategy 2: yt-dlp download with progress hook
@@ -143,6 +251,7 @@ class DownloadTask:
 
         except Exception as e:
             try:
+                AndroidNotificationHelper.cancel(self.notification_id)
                 if self.is_cancelled:
                     self.db.update_download_progress(
                         self.task_id, status="cancelled", progress=0.0,
@@ -162,7 +271,7 @@ class DownloadTask:
 
     def _download_direct_http(self):
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "*/*"
         }
         clean_title = sanitize_filename(self.title)
@@ -174,13 +283,14 @@ class DownloadTask:
             downloaded = os.path.getsize(part_path)
             headers["Range"] = f"bytes={downloaded}-"
 
-        resp = requests.get(self.direct_url, headers=headers, stream=True, timeout=20)
+        session = requests.Session()
+        resp = session.get(self.direct_url, headers=headers, stream=True, timeout=25)
         total_size = downloaded
         if "content-length" in resp.headers:
             total_size += int(resp.headers["content-length"])
 
         mode = "ab" if downloaded > 0 else "wb"
-        chunk_size = 1024 * 128  # 128 KB
+        chunk_size = 1024 * 256  # 256 KB chunks for high throughput
         self.last_time = time.time()
         self.last_bytes = downloaded
 
@@ -194,6 +304,7 @@ class DownloadTask:
                         self.task_id, status="cancelled", progress=0.0,
                         downloaded_bytes=0, total_bytes=total_size, speed=0.0
                     )
+                    AndroidNotificationHelper.cancel(self.notification_id)
                     return
 
                 if self.is_paused:
@@ -202,6 +313,7 @@ class DownloadTask:
                         progress=(downloaded / total_size * 100) if total_size else 0,
                         downloaded_bytes=downloaded, total_bytes=total_size, speed=0.0
                     )
+                    AndroidNotificationHelper.cancel(self.notification_id)
                     return
 
                 if chunk:
@@ -210,14 +322,18 @@ class DownloadTask:
 
                     now = time.time()
                     elapsed = now - self.last_time
-                    if elapsed >= 0.8:  # Update UI every 800ms
+                    if elapsed >= 0.8:
                         speed = (downloaded - self.last_bytes) / elapsed
                         self.last_time = now
                         self.last_bytes = downloaded
                         prog = (downloaded / total_size * 100) if total_size else 0
+                        speed_str = f"{speed / (1024*1024):.1f} MB/s" if speed > 0 else ""
                         self.db.update_download_progress(
                             self.task_id, status="downloading", progress=round(prog, 1),
                             downloaded_bytes=downloaded, total_bytes=total_size, speed=round(speed, 1)
+                        )
+                        AndroidNotificationHelper.update_progress(
+                            self.notification_id, self.title, prog, speed_str
                         )
 
         # Download completed
@@ -232,6 +348,7 @@ class DownloadTask:
                 downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
             )
             scan_file_to_android_gallery(final_path)
+            AndroidNotificationHelper.show_complete(self.notification_id, self.title)
             try:
                 from core.overlay import show_android_toast
                 show_android_toast(f"✅ Video saved to phone: {clean_title}")
@@ -244,8 +361,10 @@ class DownloadTask:
 
         def hook(d):
             if self.is_cancelled:
+                AndroidNotificationHelper.cancel(self.notification_id)
                 raise Exception("Download cancelled by user.")
             if self.is_paused:
+                AndroidNotificationHelper.cancel(self.notification_id)
                 raise Exception("Download paused by user.")
 
             if d["status"] == "downloading":
@@ -253,32 +372,24 @@ class DownloadTask:
                 downloaded = d.get("downloaded_bytes") or 0
                 speed = d.get("speed") or 0.0
                 prog = (downloaded / total * 100) if total else 0
-                self.db.update_download_progress(
-                    self.task_id, status="downloading", progress=round(prog, 1),
-                    downloaded_bytes=downloaded, total_bytes=total, speed=round(speed, 1)
-                )
-            elif d["status"] == "finished":
-                final_filename = d.get("filename")
-                if final_filename and os.path.exists(final_filename):
-                    file_size = os.path.getsize(final_filename)
-                    self.db.update_download_filepath(self.task_id, final_filename, file_size)
+                now = time.time()
+                if now - self.last_time >= 0.8:
+                    self.last_time = now
+                    speed_str = f"{speed / (1024*1024):.1f} MB/s" if speed > 0 else ""
                     self.db.update_download_progress(
-                        self.task_id, status="completed", progress=100.0,
-                        downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
+                        self.task_id, status="downloading", progress=round(prog, 1),
+                        downloaded_bytes=downloaded, total_bytes=total, speed=round(speed, 1)
                     )
-                    scan_file_to_android_gallery(final_filename)
-                    try:
-                        from core.overlay import show_android_toast
-                        show_android_toast(f"✅ Video saved to phone: {clean_title}")
-                    except Exception:
-                        pass
+                    AndroidNotificationHelper.update_progress(
+                        self.notification_id, self.title, prog, speed_str
+                    )
 
-        # Ensure format does not require ffmpeg merging on Android
-        format_sel = self.format_selector or "best"
+        # Build resilient format selector that guarantees video+audio without requiring ffmpeg
+        format_sel = self.format_selector or "b"
         if "+" in format_sel:
-            format_sel = f"{format_sel}/best[ext=mp4][acodec!=none]/best[acodec!=none]/best"
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none]/best"
         else:
-            format_sel = f"{format_sel}[acodec!=none]/{format_sel}/best[ext=mp4][acodec!=none]/best"
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none]/best"
 
         ydl_opts = {
             "format": format_sel,
@@ -288,21 +399,81 @@ class DownloadTask:
             "no_warnings": True,
             "nocheckcertificate": True,
             "geo_bypass": True,
+            "concurrent_fragment_downloads": 4,  # High speed multi-part downloads
+            "buffersize": 1024 * 1024,          # 1 MB buffer for fast writes
+            "retries": 10,
+            "fragment_retries": 10,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "mweb", "web"]
+                }
+            }
         }
 
         import yt_dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([self.url])
+            info = ydl.extract_info(self.url, download=True)
+
+        # Reliably resolve final file path after download completes
+        final_file = None
+        if info:
+            req_dls = info.get("requested_downloads") or []
+            for req in req_dls:
+                fp = req.get("filepath") or req.get("filename")
+                if fp and os.path.exists(fp):
+                    final_file = fp
+                    break
+            if not final_file:
+                fp = info.get("_filename")
+                if fp and os.path.exists(fp):
+                    final_file = fp
+            if not final_file:
+                try:
+                    prepared = ydl.prepare_filename(info)
+                    if prepared and os.path.exists(prepared):
+                        final_file = prepared
+                except Exception:
+                    pass
+
+        if not final_file and os.path.exists(self.output_dir):
+            for fname in os.listdir(self.output_dir):
+                if clean_title in fname and not fname.endswith(".part"):
+                    candidate = os.path.join(self.output_dir, fname)
+                    if os.path.isfile(candidate):
+                        final_file = candidate
+                        break
+
+        if final_file and os.path.exists(final_file):
+            file_size = os.path.getsize(final_file)
+            self.db.update_download_filepath(self.task_id, final_file, file_size)
+            self.db.update_download_progress(
+                self.task_id, status="completed", progress=100.0,
+                downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
+            )
+            scan_file_to_android_gallery(final_file)
+            AndroidNotificationHelper.show_complete(self.notification_id, self.title)
+            try:
+                from core.overlay import show_android_toast
+                show_android_toast(f"✅ Video saved to phone: {clean_title}")
+            except Exception:
+                pass
+        else:
+            raise Exception("File was not saved to output directory.")
 
 
 class DownloadManager:
     def __init__(self, db: Database):
         self.db = db
         self.tasks: Dict[str, DownloadTask] = {}
-        self.download_folder = self.db.get_setting(
-            "download_folder",
-            get_default_download_dir()
-        )
+        default_dir = get_default_download_dir()
+        saved_dir = self.db.get_setting("download_folder", default_dir)
+
+        # Auto-migrate away from internal sandbox or invalid paths
+        if not saved_dir or "/data/user/0" in saved_dir or ".universal_downloader" in saved_dir or not os.path.exists(saved_dir):
+            saved_dir = default_dir
+            self.db.set_setting("download_folder", saved_dir)
+
+        self.download_folder = saved_dir
         os.makedirs(self.download_folder, exist_ok=True)
 
     def create_download(self, url: str, title: str, quality_label: str,
@@ -379,3 +550,4 @@ class DownloadManager:
         if item and item.get("file_path") and os.path.exists(item["file_path"]):
             return open_video_in_external_player(item["file_path"])
         return False
+

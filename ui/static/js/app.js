@@ -142,19 +142,29 @@ function initUrlAnalyzer() {
     const downloadBtn = document.getElementById('btn-start-download');
 
     pasteBtn.addEventListener('click', async () => {
-        try {
-            const text = await navigator.clipboard.readText();
-            if (text) {
-                urlInput.value = text.trim();
-                triggerAnalyze(text.trim());
-            }
-        } catch (err) {
-            // Fallback for Android WebView if clipboard permission prompt is required
-            const manual = prompt('Paste Video or Webpage Link:');
-            if (manual) {
-                urlInput.value = manual.trim();
-                triggerAnalyze(manual.trim());
-            }
+        let text = '';
+        // 1. Try web clipboard API
+        if (navigator.clipboard && navigator.clipboard.readText) {
+            try {
+                text = await navigator.clipboard.readText();
+            } catch (_) {}
+        }
+        // 2. Fall back to backend native Android system clipboard
+        if (!text) {
+            try {
+                const res = await fetch('/api/clipboard/detect');
+                if (res.ok) {
+                    const data = await res.json();
+                    text = data.url || data.raw_text;
+                }
+            } catch (_) {}
+        }
+        if (text && text.trim()) {
+            urlInput.value = text.trim();
+            showToast('📋 Link pasted from clipboard!');
+            triggerAnalyze(text.trim());
+        } else {
+            showToast('Clipboard is empty. Copy a video link first!');
         }
     });
 
@@ -267,9 +277,21 @@ function watchAnalyzedVideo() {
         const modal = document.getElementById('player-modal');
         const player = document.getElementById('media-player');
         const extBtn = document.getElementById('btn-player-open-external');
+        const errBox = document.getElementById('player-error-msg');
+        if (errBox) errBox.style.display = 'none';
         if (extBtn) extBtn.style.display = 'none';
 
         // Route through local stream proxy to prevent 403 Forbidden on mobile
+        player.onerror = () => {
+            if (errBox) {
+                errBox.style.display = 'block';
+                errBox.innerHTML = `
+                    <div style="margin-bottom:8px;">⚠️ WebView video player could not stream this video directly.</div>
+                    <button class="btn btn-primary btn-sm" onclick="startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0])" style="font-size:12px;">⬇ Download to Phone to Watch Offline</button>
+                `;
+            }
+        };
+
         player.src = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}`;
         modal.classList.add('active');
         player.play().catch(e => console.log('Autoplay deferred:', e));
@@ -322,13 +344,39 @@ function startDownloadPolling() {
         if (currentTab === 'downloads') {
             loadDownloads(false);
         }
-    }, 1500);
+    }, 2000);
 }
+
+let lastRenderedDownloadIds = '';
 
 async function loadDownloads(showLoading = true) {
     try {
         const res = await fetch(`/api/downloads?filter=${downloadFilter}`);
         const items = await res.json();
+        
+        // Update downloads count badges
+        const totalCount = items ? items.length : 0;
+        const activeCount = items ? items.filter(it => it.status === 'downloading' || it.status === 'queued').length : 0;
+        
+        const summaryCountEl = document.getElementById('dl-summary-count');
+        if (summaryCountEl) summaryCountEl.textContent = totalCount;
+        
+        const activeBadgeEl = document.getElementById('dl-active-count-badge');
+        if (activeBadgeEl) {
+            activeBadgeEl.textContent = activeCount > 0 ? `⚡ ${activeCount} Downloading` : '0 Active';
+            activeBadgeEl.style.color = activeCount > 0 ? '#10B981' : '#94A3B8';
+        }
+
+        const navBadgeEl = document.getElementById('nav-downloads-count');
+        if (navBadgeEl) {
+            if (activeCount > 0) {
+                navBadgeEl.textContent = activeCount;
+                navBadgeEl.style.display = 'inline-block';
+            } else {
+                navBadgeEl.style.display = 'none';
+            }
+        }
+
         renderDownloadsList(items);
     } catch (err) {
         console.error('Error fetching downloads:', err);
@@ -338,9 +386,33 @@ async function loadDownloads(showLoading = true) {
 function renderDownloadsList(items) {
     const list = document.getElementById('downloads-list');
     if (!items || items.length === 0) {
+        lastRenderedDownloadIds = '';
         list.innerHTML = `<div style="text-align:center; padding: 40px 10px; color: #94A3B8;">No downloads found in this tab.</div>`;
         return;
     }
+
+    // Check if item structure changed (e.g. items added, removed, or changed status)
+    const currentSignature = items.map(it => `${it.id}:${it.status}`).join('|');
+    if (currentSignature === lastRenderedDownloadIds) {
+        // Fast path: smoothly update progress numbers and bars without destroying DOM elements
+        items.forEach(item => {
+            const fill = document.getElementById(`prog-fill-${item.id}`);
+            if (fill) fill.style.width = `${item.progress}%`;
+            const pct = document.getElementById(`prog-pct-${item.id}`);
+            if (pct) pct.textContent = `${item.progress.toFixed(1)}%`;
+            const mb = document.getElementById(`prog-mb-${item.id}`);
+            if (mb) mb.textContent = `${((item.downloaded_bytes || 0) / (1024*1024)).toFixed(1)} MB`;
+            const meta = document.getElementById(`meta-info-${item.id}`);
+            if (meta) {
+                let speedText = (item.status === 'downloading' && item.speed > 0)
+                    ? ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s` : '';
+                meta.innerHTML = `${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}`;
+            }
+        });
+        return;
+    }
+
+    lastRenderedDownloadIds = currentSignature;
 
     list.innerHTML = items.map(item => {
         const isDownloading = item.status === 'downloading';
@@ -355,32 +427,32 @@ function renderDownloadsList(items) {
         const thumbSrc = getSafeThumbnailUrl(item.thumbnail);
 
         return `
-            <div class="download-item">
+            <div class="download-item" id="dl-card-${item.id}">
                 <div class="dl-header">
                     <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || ''}" />
                     <div class="dl-info">
                         <div class="dl-title">${item.title}</div>
-                        <div class="dl-meta">${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}</div>
+                        <div class="dl-meta" id="meta-info-${item.id}">${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}</div>
                     </div>
                 </div>
                 ${!isCompleted ? `
                     <div class="progress-bar-bg">
-                        <div class="progress-bar-fill" style="width: ${item.progress}%"></div>
+                        <div class="progress-bar-fill" id="prog-fill-${item.id}" style="width: ${item.progress}%"></div>
                     </div>
                     <div style="display:flex; justify-content:space-between; font-size:11px; color:#94A3B8;">
-                        <span>${item.progress.toFixed(1)}%</span>
-                        <span>${((item.downloaded_bytes || 0) / (1024*1024)).toFixed(1)} MB</span>
+                        <span id="prog-pct-${item.id}">${item.progress.toFixed(1)}%</span>
+                        <span id="prog-mb-${item.id}">${((item.downloaded_bytes || 0) / (1024*1024)).toFixed(1)} MB</span>
                     </div>
                 ` : ''}
                 <div class="dl-actions">
-                    ${isDownloading ? `<button class="btn btn-secondary btn-sm" onclick="pauseDownload('${item.id}')">Pause</button>` : ''}
-                    ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">Resume</button>` : ''}
-                    ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">Cancel</button>` : ''}
+                    ${isDownloading ? `<button class="btn btn-secondary btn-sm" onclick="pauseDownload('${item.id}')">⏸ Pause</button>` : ''}
+                    ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">▶ Resume</button>` : ''}
+                    ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">✕ Cancel</button>` : ''}
                     ${isCompleted ? `
                         <button class="btn btn-primary btn-sm" onclick="playVideo('${item.id}')">▶ Play</button>
                         <button class="btn btn-secondary btn-sm" onclick="openInPhonePlayer('${item.id}')" title="Open in phone gallery or video player">📱 Open</button>
                         <button class="btn btn-secondary btn-sm" onclick="hideInVault('${item.id}')">🔒 Hide in Vault</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteDownload('${item.id}')">Delete</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteDownload('${item.id}')">🗑 Delete</button>
                     ` : ''}
                 </div>
             </div>
@@ -631,7 +703,19 @@ function playVideo(downloadId) {
     const modal = document.getElementById('player-modal');
     const player = document.getElementById('media-player');
     const extBtn = document.getElementById('btn-player-open-external');
+    const errBox = document.getElementById('player-error-msg');
+    if (errBox) errBox.style.display = 'none';
     if (extBtn) extBtn.style.display = 'inline-block';
+
+    player.onerror = () => {
+        if (errBox) {
+            errBox.style.display = 'block';
+            errBox.innerHTML = `
+                <div style="margin-bottom:8px;">⚠️ Built-in WebView cannot decode this video container/codec.</div>
+                <button class="btn btn-primary btn-sm" onclick="openCurrentInExternalPlayer()" style="font-size:12px;">📱 Play in Phone Video Player (VLC / MX / Gallery)</button>
+            `;
+        }
+    };
 
     player.src = `/media/stream/${downloadId}`;
     modal.classList.add('active');
@@ -668,6 +752,8 @@ async function playVaultVideo(vaultId) {
         if (data.stream_url) {
             const modal = document.getElementById('player-modal');
             const player = document.getElementById('media-player');
+            const errBox = document.getElementById('player-error-msg');
+            if (errBox) errBox.style.display = 'none';
             player.src = data.stream_url;
             modal.classList.add('active');
             player.play().catch(e => console.log('Autoplay deferred:', e));
@@ -680,8 +766,11 @@ async function playVaultVideo(vaultId) {
 function closePlayer() {
     const modal = document.getElementById('player-modal');
     const player = document.getElementById('media-player');
+    const errBox = document.getElementById('player-error-msg');
+    if (errBox) errBox.style.display = 'none';
     player.pause();
-    player.src = '';
+    player.removeAttribute('src');
+    player.load();
     modal.classList.remove('active');
 }
 
@@ -819,8 +908,8 @@ function initClipboardDetection() {
     // Initial check after page renders
     setTimeout(checkClipboardForVideo, 600);
 
-    // Continuous poll every 2.5s for seamless background copy detection
-    setInterval(checkClipboardForVideo, 2500);
+    // Continuous poll every 4.0s for background copy detection
+    setInterval(checkClipboardForVideo, 4000);
 }
 
 async function checkClipboardForVideo() {
@@ -989,7 +1078,7 @@ function startOverlayPolling() {
                 }
             }
         } catch (_) {}
-    }, 1500);
+    }, 3000);
 }
 
 // Launch floating bubble onto screen

@@ -215,10 +215,28 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
         if path.startswith("/media/stream/"):
             download_id = path[len("/media/stream/"):].strip("/")
             item = db.get_download(download_id)
-            if not item or not item.get("file_path") or not os.path.exists(item["file_path"]):
-                self.send_error_json("Media not found", 404)
+            if not item:
+                self.send_error_json("Download record not found", 404)
                 return
-            self.serve_file(item["file_path"], "video/mp4")
+            file_path = item.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                # Search download folder if filename or title matches
+                from core.downloader import sanitize_filename
+                clean_title = sanitize_filename(item.get("title", ""))
+                dl_folder = downloader.download_folder
+                matched = None
+                if os.path.exists(dl_folder):
+                    for fn in os.listdir(dl_folder):
+                        if (clean_title in fn or download_id[:6] in fn) and not fn.endswith(".part"):
+                            matched = os.path.join(dl_folder, fn)
+                            break
+                if matched and os.path.exists(matched):
+                    file_path = matched
+                    db.update_download_filepath(download_id, matched, os.path.getsize(matched))
+                else:
+                    self.send_error_json("Media file not found on device storage", 404)
+                    return
+            self.serve_file(file_path, "video/mp4")
             return
 
         if path.startswith("/media/vault_temp/"):
@@ -277,6 +295,7 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             if not stream_url:
                 self.send_error_json("Missing stream URL", 400)
                 return
+            headers_sent = False
             try:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -286,20 +305,24 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 if req_range:
                     headers["Range"] = req_range
 
-                resp = requests.get(stream_url, headers=headers, stream=True, timeout=12)
+                resp = requests.get(stream_url, headers=headers, stream=True, timeout=15)
                 self.send_response(resp.status_code)
                 for h in ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]:
                     if h in resp.headers:
                         self.send_header(h, resp.headers[h])
                 self.send_cors_headers()
                 self.end_headers()
+                headers_sent = True
 
-                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                for chunk in resp.iter_content(chunk_size=128 * 1024):
                     if chunk:
                         self.wfile.write(chunk)
                 return
+            except (ConnectionResetError, BrokenPipeError):
+                return
             except Exception as se:
-                self.send_error_json(f"Stream proxy error: {se}", 502)
+                if not headers_sent:
+                    self.send_error_json(f"Stream proxy error: {se}", 502)
                 return
 
         if path == "/api/thumbnail-proxy":
@@ -354,12 +377,23 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/clipboard/detect":
-            clip_text = get_android_clipboard_text() if is_running_on_android() else ""
+            clip_text = ""
+            if is_running_on_android():
+                clip_text = get_android_clipboard_text()
+            else:
+                try:
+                    import tkinter as tk
+                    r = tk.Tk()
+                    r.withdraw()
+                    clip_text = r.clipboard_get()
+                    r.destroy()
+                except Exception:
+                    pass
             video_url = detect_video_url(clip_text)
             self.send_json({
                 "has_video": bool(video_url),
                 "url": video_url or "",
-                "raw_text": clip_text[:80] if clip_text else ""
+                "raw_text": clip_text[:500] if clip_text else ""
             })
             return
 

@@ -42,6 +42,11 @@ class MediaDetector:
             "nocheckcertificate": True,
             "geo_bypass": True,
             "socket_timeout": 15,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "mweb", "web"]
+                }
+            }
         }
 
     def analyze_url(self, url: str) -> Dict[str, Any]:
@@ -125,7 +130,7 @@ class MediaDetector:
                         "has_audio": is_audio,
                         "has_video": True,
                         "direct_url": url,
-                        "download_selector": f"best[height<={height}][ext=mp4][acodec!=none]/best[height<={height}][acodec!=none]/best[height<={height}]/best" if height else "best[ext=mp4][acodec!=none]/best[acodec!=none]/best"
+                        "download_selector": f"best[height<={height}][ext=mp4][acodec!=none]/best[height<={height}][acodec!=none]/b/18/best" if height else "b/18/best[vcodec!=none][acodec!=none]/best"
                     }
             elif is_audio and not is_video:
                 # Audio only stream
@@ -169,6 +174,11 @@ class MediaDetector:
                 "download_selector": "best"
             })
 
+        # Select the best direct URL that has both video and audio for in-app preview
+        best_direct = next((f["direct_url"] for f in all_formats if f.get("has_audio") and f.get("has_video") and f.get("direct_url")), "")
+        if not best_direct and all_formats:
+            best_direct = all_formats[0].get("direct_url", "")
+
         return {
             "success": True,
             "title": title,
@@ -176,7 +186,7 @@ class MediaDetector:
             "duration": duration,
             "duration_str": format_duration(duration),
             "source_url": original_url,
-            "direct_url": all_formats[0].get("direct_url", "") if all_formats else "",
+            "direct_url": best_direct,
             "is_protected": is_protected,
             "protection_reason": protection_reason,
             "formats": all_formats,

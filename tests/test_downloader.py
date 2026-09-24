@@ -72,9 +72,35 @@ def test_download_task_record(temp_db):
 
 
 def test_android_notification_helper_graceful():
-    from core.downloader import AndroidNotificationHelper
+    from core.downloader import AndroidNotificationHelper, get_android_sdk_level
+    assert isinstance(get_android_sdk_level(), int)
+    assert get_android_sdk_level() >= 1
     # Verify non-Android graceful degradation (no unhandled exceptions)
     AndroidNotificationHelper.update_progress(1234, "Test Video", 50.0, "2.5 MB/s")
     AndroidNotificationHelper.show_complete(1234, "Test Video")
     AndroidNotificationHelper.cancel(1234)
+
+
+def test_direct_http_fallback_to_ytdlp(temp_db):
+    from unittest.mock import patch, MagicMock
+    from core.downloader import DownloadTask
+
+    db, temp_dir = temp_db
+    task = DownloadTask(
+        task_id="fallback_test_123",
+        url="https://www.example.com/video-page",
+        title="Fallback Test",
+        format_selector="b",
+        direct_url="https://cdn.example.com/stream.mp4",
+        output_dir=temp_dir,
+        db=db
+    )
+
+    # Simulate direct HTTP returning non-video / text-html
+    with patch.object(task, "_download_direct_http", side_effect=ValueError("Server returned non-video content type (text/html)")) as mock_direct:
+        with patch.object(task, "_download_via_ytdlp") as mock_ytdlp:
+            task._run()
+            mock_direct.assert_called_once()
+            mock_ytdlp.assert_called_once()
+
 

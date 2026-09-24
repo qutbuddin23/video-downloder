@@ -45,6 +45,23 @@ def scan_file_to_android_gallery(file_path: str):
         print(f"[MediaScanner] Scan notice: {e}")
 
 
+def get_android_sdk_level() -> int:
+    """Safely retrieves Android SDK API level across all PyJNIus / Android versions."""
+    try:
+        import sys
+        if hasattr(sys, 'getandroidapilevel'):
+            return int(sys.getandroidapilevel())
+    except Exception:
+        pass
+    try:
+        from jnius import autoclass
+        BuildVersion = autoclass("android.os.Build$VERSION")
+        return int(BuildVersion.SDK_INT)
+    except Exception:
+        pass
+    return 30
+
+
 class AndroidNotificationHelper:
     """Live Android status bar notifications with real-time download progress bar."""
     CHANNEL_ID = "universal_downloader_channel"
@@ -57,8 +74,7 @@ class AndroidNotificationHelper:
             return
         try:
             from jnius import autoclass
-            Build = autoclass("android.os.Build")
-            if Build.VERSION.SDK_INT >= 26:
+            if get_android_sdk_level() >= 26:
                 NotificationChannel = autoclass("android.app.NotificationChannel")
                 NotificationManager = autoclass("android.app.NotificationManager")
                 Context = autoclass("android.content.Context")
@@ -100,15 +116,23 @@ class AndroidNotificationHelper:
                 sub_text += f" • {speed_str}"
             body_str = String(sub_text)
 
-            builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            if get_android_sdk_level() >= 26:
+                builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            else:
+                builder = Notification.Builder(context)
+
             builder.setContentTitle(cast("java.lang.CharSequence", title_str))
             builder.setContentText(cast("java.lang.CharSequence", body_str))
 
-            icon_id = context.getApplicationInfo().icon
+            icon_id = 0
+            try:
+                icon_id = context.getApplicationInfo().icon
+            except Exception:
+                pass
             if not icon_id:
                 try:
                     android_R = autoclass("android.R$drawable")
-                    icon_id = android_R.stat_sys_download
+                    icon_id = getattr(android_R, "stat_sys_download", 17301634)
                 except Exception:
                     icon_id = 17301634
             builder.setSmallIcon(int(icon_id))
@@ -137,15 +161,23 @@ class AndroidNotificationHelper:
             String = autoclass("java.lang.String")
             nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
 
-            builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            if get_android_sdk_level() >= 26:
+                builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            else:
+                builder = Notification.Builder(context)
+
             builder.setContentTitle(cast("java.lang.CharSequence", String("✅ Download Complete!")))
             builder.setContentText(cast("java.lang.CharSequence", String(title[:50])))
 
-            icon_id = context.getApplicationInfo().icon
+            icon_id = 0
+            try:
+                icon_id = context.getApplicationInfo().icon
+            except Exception:
+                pass
             if not icon_id:
                 try:
                     android_R = autoclass("android.R$drawable")
-                    icon_id = android_R.stat_sys_download_done
+                    icon_id = getattr(android_R, "stat_sys_download_done", 17301633)
                 except Exception:
                     icon_id = 17301633
             builder.setSmallIcon(int(icon_id))
@@ -271,12 +303,20 @@ class DownloadTask:
                 downloaded_bytes=0, total_bytes=0, speed=0.0
             )
 
-            # Strategy 1: Direct HTTP chunked download if direct_url has direct media extension (ignoring query tokens)
+            # Strategy 1: Attempt direct HTTP chunked download if direct_url has direct media extension
+            download_succeeded = False
             clean_direct = (self.direct_url or "").split("?")[0].lower()
             if self.direct_url and any(clean_direct.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
-                self._download_direct_http()
-            else:
-                # Strategy 2: yt-dlp download with progress hook
+                try:
+                    self._download_direct_http()
+                    download_succeeded = True
+                except Exception as direct_err:
+                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), falling back to yt-dlp...")
+                    if self.is_cancelled or self.is_paused:
+                        return
+
+            # Strategy 2: Resilient yt-dlp download with progress hook
+            if not download_succeeded:
                 self._download_via_ytdlp()
 
         except Exception as e:
@@ -301,9 +341,18 @@ class DownloadTask:
 
     def _download_direct_http(self):
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "*/*"
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Connection": "keep-alive"
         }
+        if self.url:
+            headers["Referer"] = self.url
+            try:
+                parts = urllib.parse.urlsplit(self.url)
+                headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
+            except Exception:
+                pass
         clean_title = sanitize_filename(self.title)
         part_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.part")
         final_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.mp4")
@@ -437,11 +486,19 @@ class DownloadTask:
         # Build resilient format selector that guarantees video+audio without selecting storyboards/images
         format_sel = self.format_selector or "b"
         if "sb" in format_sel or format_sel == "best":
-            format_sel = "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/bestvideo[format_id!^=sb]+bestaudio/best[format_id!^=sb]"
+            format_sel = "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/bestvideo[format_id!^=sb]+bestaudio/best[format_id!^=sb]/best"
         elif "+" in format_sel:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
         else:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
+
+        http_hdrs = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if self.url:
+            http_hdrs["Referer"] = self.url
 
         ydl_opts = {
             "format": format_sel,
@@ -455,6 +512,7 @@ class DownloadTask:
             "buffersize": 1024 * 1024,          # 1 MB buffer for fast writes
             "retries": 10,
             "fragment_retries": 10,
+            "http_headers": http_hdrs,
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "android_vr", "web"]
@@ -464,7 +522,14 @@ class DownloadTask:
 
         import yt_dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(self.url, download=True)
+            try:
+                info = ydl.extract_info(self.url, download=True)
+            except Exception as primary_err:
+                if self.direct_url and self.direct_url != self.url:
+                    print(f"[Downloader] Primary URL error ({primary_err}), trying direct stream URL with yt-dlp...")
+                    info = ydl.extract_info(self.direct_url, download=True)
+                else:
+                    raise primary_err
 
         # Reliably resolve final file path after download completes
         final_file = None

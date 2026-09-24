@@ -31,12 +31,17 @@ def setup_android_floating_button(context):
         PixelFormat = autoclass("android.graphics.PixelFormat")
         Gravity = autoclass("android.view.Gravity")
         ImageView = autoclass("android.widget.ImageView")
-        Build = autoclass("android.os.Build")
+        sdk_int = 30
+        try:
+            BuildVersion = autoclass("android.os.Build$VERSION")
+            sdk_int = int(BuildVersion.SDK_INT)
+        except Exception:
+            pass
 
         window_manager = cast(WindowManager, service.getSystemService(Context.WINDOW_SERVICE))
 
         # Check Android version for layout type
-        if Build.VERSION.SDK_INT >= 26:
+        if sdk_int >= 26:
             layout_type = LayoutParams.TYPE_APPLICATION_OVERLAY
         else:
             layout_type = LayoutParams.TYPE_PHONE

@@ -312,9 +312,26 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             headers_sent = False
             try:
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                    "Accept": "*/*"
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "identity",
+                    "Connection": "keep-alive"
                 }
+                referer = query.get("referer", [""])[0]
+                if not referer:
+                    try:
+                        parts = urllib.parse.urlsplit(stream_url)
+                        referer = f"{parts.scheme}://{parts.netloc}/"
+                    except Exception:
+                        pass
+                if referer:
+                    headers["Referer"] = referer
+                    try:
+                        parts = urllib.parse.urlsplit(referer)
+                        headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
+                    except Exception:
+                        pass
+
                 req_range = self.headers.get("Range")
                 if req_range:
                     headers["Range"] = req_range

@@ -288,7 +288,8 @@ function watchAnalyzedVideo() {
             }
         };
 
-        player.src = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}`;
+        const refUrl = (currentAnalysis && currentAnalysis.source_url) ? encodeURIComponent(currentAnalysis.source_url) : '';
+        player.src = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}&referer=${refUrl}`;
         modal.classList.add('active');
         player.play().catch(e => console.log('Autoplay deferred:', e));
     } else {

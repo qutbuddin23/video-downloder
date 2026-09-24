@@ -223,8 +223,25 @@ def detect_video_url(text: str) -> Optional[str]:
     return None
 
 
+def get_android_sdk_level() -> int:
+    """Safely retrieves Android SDK API level across all PyJNIus / Android versions."""
+    try:
+        import sys
+        if hasattr(sys, 'getandroidapilevel'):
+            return int(sys.getandroidapilevel())
+    except Exception:
+        pass
+    try:
+        from jnius import autoclass
+        BuildVersion = autoclass("android.os.Build$VERSION")
+        return int(BuildVersion.SDK_INT)
+    except Exception:
+        pass
+    return 30
+
+
 def get_android_clipboard_text() -> str:
-    """Reads system clipboard on Android devices via PyJNIus."""
+    """Reads system clipboard on Android devices via PyJNIus using coerceToText."""
     try:
         from jnius import autoclass
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
@@ -235,7 +252,10 @@ def get_android_clipboard_text() -> str:
             clip = clipboard.getPrimaryClip()
             if clip and clip.getItemCount() > 0:
                 item = clip.getItemAt(0)
-                text = item.getText()
+                try:
+                    text = item.coerceToText(activity)
+                except Exception:
+                    text = item.getText()
                 return str(text) if text else ""
     except Exception as e:
         print(f"[Clipboard] Android get text notice: {e}")
@@ -243,7 +263,7 @@ def get_android_clipboard_text() -> str:
 
 
 def show_android_toast(message: str):
-    """Displays native Android Toast notification."""
+    """Displays native Android Toast notification across any active app."""
     try:
         from jnius import autoclass
         from android.runnable import run_on_ui_thread
@@ -253,10 +273,11 @@ def show_android_toast(message: str):
             try:
                 PythonActivity = autoclass("org.kivy.android.PythonActivity")
                 activity = PythonActivity.mActivity
-                Toast = autoclass("android.widget.Toast")
-                String = autoclass("java.lang.String")
                 if activity:
-                    Toast.makeText(activity, String(message), Toast.LENGTH_SHORT).show()
+                    ctx = activity.getApplicationContext() or activity
+                    Toast = autoclass("android.widget.Toast")
+                    String = autoclass("java.lang.String")
+                    Toast.makeText(ctx, String(message), Toast.LENGTH_SHORT).show()
             except Exception as te:
                 print(f"[Toast] error: {te}")
         _toast()
@@ -414,7 +435,6 @@ class AndroidFloatingOverlay:
                     TextView = autoclass("android.widget.TextView")
                     Color = autoclass("android.graphics.Color")
                     GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
-                    Build = autoclass("android.os.Build")
 
                     # Use Application Context or Activity WindowManager
                     app_context = activity.getApplicationContext()
@@ -425,7 +445,7 @@ class AndroidFloatingOverlay:
                     self.window_manager = wm
 
                     # In Android 8.0+ (API 26+), must use TYPE_APPLICATION_OVERLAY (2038)
-                    layout_type = 2038 if Build.VERSION.SDK_INT >= 26 else 2002
+                    layout_type = 2038 if get_android_sdk_level() >= 26 else 2002
                     # FLAG_NOT_FOCUSABLE (8) | FLAG_LAYOUT_IN_SCREEN (256)
                     flags = 8 | 256
 
@@ -439,11 +459,23 @@ class AndroidFloatingOverlay:
                     params.x = 24
                     params.y = 450
 
+                    # Remove existing view if already mounted
+                    if self.floating_view:
+                        try:
+                            wm.removeView(self.floating_view)
+                        except Exception:
+                            pass
+                        self.floating_view = None
+
                     btn = TextView(activity)
                     btn.setText("⚡")
                     btn.setTextSize(26)
                     btn.setGravity(Gravity.CENTER)
                     btn.setTextColor(Color.WHITE)
+                    try:
+                        btn.setClickable(True)
+                    except Exception:
+                        pass
 
                     shape = GradientDrawable()
                     shape.setShape(GradientDrawable.OVAL)
@@ -479,23 +511,37 @@ class AndroidFloatingOverlay:
         return {"active": True, "needs_permission": False, "message": "⚡ Floating Bubble is now active on your screen! Drag it anywhere."}
 
     def _on_bubble_clicked(self):
-        # On Android 10+, background apps cannot read clipboard without input focus.
-        # Bring the activity forward so clipboard is accessed with 100% guarantee.
+        # Handle click asynchronously so the Android UI thread is never blocked
+        threading.Thread(target=self._handle_bubble_click_async, daemon=True).start()
+
+    def _handle_bubble_click_async(self):
+        # 1. Bring activity to front so app acquires input focus for Android 10+ clipboard access
         try:
             from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if activity:
-                Intent = autoclass("android.content.Intent")
-                intent = Intent(activity, activity.getClass())
-                intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                activity.startActivity(intent)
-        except Exception as fe:
-            print(f"[Overlay] Focus bring-to-front notice: {fe}")
+            from android.runnable import run_on_ui_thread
 
-        time.sleep(0.15)
+            @run_on_ui_thread
+            def _bring_forward():
+                try:
+                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                    activity = PythonActivity.mActivity
+                    if activity:
+                        Intent = autoclass("android.content.Intent")
+                        intent = Intent(activity, activity.getClass())
+                        intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        activity.startActivity(intent)
+                except Exception as fe:
+                    print(f"[Overlay] Focus notice: {fe}")
+            _bring_forward()
+        except Exception:
+            pass
+
+        # Give Android 300ms to bring activity to front and grant clipboard access
+        time.sleep(0.35)
+
+        # 2. Read clipboard (check both freshly read text and last_clipboard)
         clip_text = get_android_clipboard_text()
-        video_url = detect_video_url(clip_text)
+        video_url = detect_video_url(clip_text) or detect_video_url(getattr(self, "last_clipboard", ""))
         if video_url:
             show_android_toast("⚡ Video Detected! Starting Auto-Download...")
             if self.on_trigger_callback:

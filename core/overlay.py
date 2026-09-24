@@ -468,20 +468,39 @@ class AndroidFloatingOverlay:
                         self.floating_view = None
 
                     btn = TextView(activity)
-                    btn.setText("⚡")
-                    btn.setTextSize(26)
-                    btn.setGravity(Gravity.CENTER)
-                    btn.setTextColor(Color.WHITE)
+                    try:
+                        String = autoclass("java.lang.String")
+                        from jnius import cast
+                        btn.setText(cast("java.lang.CharSequence", String("⚡")))
+                    except Exception as te:
+                        print(f"[Overlay] setText CharSequence notice: {te}")
+                        try:
+                            btn.setText(String("⚡"))
+                        except Exception:
+                            pass
+                    try:
+                        btn.setTextSize(24.0)
+                    except Exception:
+                        pass
+                    try:
+                        btn.setGravity(Gravity.CENTER)
+                        btn.setTextColor(Color.WHITE)
+                    except Exception:
+                        pass
                     try:
                         btn.setClickable(True)
                     except Exception:
                         pass
 
-                    shape = GradientDrawable()
-                    shape.setShape(GradientDrawable.OVAL)
-                    shape.setColor(Color.parseColor("#6366F1"))
-                    shape.setStroke(4, Color.parseColor("#818CF8"))
-                    btn.setBackground(shape)
+                    try:
+                        shape = GradientDrawable()
+                        shape.setShape(GradientDrawable.OVAL)
+                        shape.setColor(Color.parseColor("#6366F1"))
+                        shape.setStroke(4, Color.parseColor("#818CF8"))
+                        btn.setBackground(shape)
+                    except Exception as se:
+                        print(f"[Overlay] Background shape notice: {se}")
+
 
                     try:
                         self._touch_listener = AndroidBubbleTouchListener(self, wm, params, btn)

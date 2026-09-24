@@ -10,9 +10,11 @@ import warnings
 from typing import Dict, Any, List, Optional
 import requests
 from core.storage_manager import format_bytes
+from core.paths import SafeYtdlLogger
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
+
 
 
 def format_duration(seconds: Optional[int]) -> str:
@@ -61,6 +63,8 @@ class MediaDetector:
             "skip_download": True,
             "nocheckcertificate": True,
             "geo_bypass": True,
+            "logtostderr": False,
+            "logger": SafeYtdlLogger(),
             "socket_timeout": 15,
             "extractor_args": {
                 "youtube": {

@@ -6,6 +6,61 @@ writable locations without triggering permission errors on Android sandboxes.
 
 import os
 import sys
+import time
+
+class SafeStreamWrapper:
+    """Wraps sys.stdout / sys.stderr so any .write() or .flush() calls never crash."""
+    def __init__(self, target):
+        self._target = target
+
+    def write(self, s):
+        try:
+            if hasattr(self._target, "write") and callable(self._target.write):
+                return self._target.write(str(s))
+        except Exception:
+            pass
+        return len(s) if isinstance(s, (str, bytes)) else 0
+
+    def flush(self):
+        try:
+            if hasattr(self._target, "flush") and callable(self._target.flush):
+                self._target.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._target, name, None)
+
+
+if not hasattr(sys.stderr, "write") or isinstance(sys.stderr, str):
+    sys.stderr = SafeStreamWrapper(sys.stderr)
+if not hasattr(sys.stdout, "write") or isinstance(sys.stdout, str):
+    sys.stdout = SafeStreamWrapper(sys.stdout)
+
+
+class SafeYtdlLogger:
+    """Safe logger for yt-dlp that never relies on sys.stderr or sys.stdout having a write attribute."""
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        try:
+            print(f"[yt-dlp] {msg}")
+        except Exception:
+            pass
+
+    def write(self, msg):
+        pass
+
+    def flush(self):
+        pass
+
 
 def is_android() -> bool:
     """Bulletproof Android detection across all p4a, Kivy, and Android OS versions."""
@@ -90,49 +145,28 @@ def get_temp_playback_dir() -> str:
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
 
+def is_directory_writable(path: str) -> bool:
+    """Explicitly verify folder writability by writing and removing a small test file."""
+    if not path:
+        return False
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_file = os.path.join(path, f".chk_{os.getpid()}_{int(time.time()*1000)%10000}")
+        with open(test_file, "wb") as f:
+            f.write(b"ok")
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        return True
+    except Exception:
+        return False
+
 def get_default_download_dir() -> str:
     """Return default public downloads directory visible in Gallery and File Manager."""
     if is_android():
-        # 1. Try PyJNIus Android Environment.DIRECTORY_DOWNLOADS
-        try:
-            from jnius import autoclass
-            Environment = autoclass("android.os.Environment")
-            dl_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if dl_dir:
-                public_path = dl_dir.getAbsolutePath()
-                target_path = os.path.join(public_path, "UniversalVideos")
-                os.makedirs(target_path, exist_ok=True)
-                test_file = os.path.join(target_path, ".write_test")
-                with open(test_file, "w") as f:
-                    f.write("ok")
-                os.remove(test_file)
-                print(f"[Paths] Using public Android download path: {target_path}")
-                return target_path
-        except Exception as e:
-            print(f"[Paths] PyJNIus Environment download path check: {e}")
-
-        # 2. Try standard external shared download directories
-        candidates = [
-            "/storage/emulated/0/Download/UniversalVideos",
-            "/storage/emulated/0/Download",
-            "/sdcard/Download/UniversalVideos",
-            "/sdcard/Download",
-            "/storage/emulated/0/Movies",
-            "/sdcard/Movies"
-        ]
-        for candidate in candidates:
-            try:
-                os.makedirs(candidate, exist_ok=True)
-                test_file = os.path.join(candidate, ".write_test")
-                with open(test_file, "w") as f:
-                    f.write("ok")
-                os.remove(test_file)
-                print(f"[Paths] Using candidate Android download path: {candidate}")
-                return candidate
-            except Exception:
-                continue
-
-        # 3. Try Context.getExternalFilesDir (Always writable on all Android versions)
+        # 1. Primary Android location: Context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        # On Android 10, 11, 12, 13, 14, 15, getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        # is ALWAYS fully writable without requiring MANAGE_EXTERNAL_STORAGE permission,
+        # AND files scanned with MediaScannerConnection immediately show up in the Gallery & Downloads!
         try:
             from jnius import autoclass
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
@@ -142,9 +176,39 @@ def get_default_download_dir() -> str:
                 ext_dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 if ext_dir:
                     ext_path = ext_dir.getAbsolutePath()
-                    os.makedirs(ext_path, exist_ok=True)
+                    if is_directory_writable(ext_path):
+                        print(f"[Paths] Using safe external files dir: {ext_path}")
+                        return ext_path
         except Exception as e:
             print(f"[Paths] getExternalFilesDir notice: {e}")
+
+        # 2. Try PyJNIus Android Environment.getExternalStoragePublicDirectory
+        try:
+            from jnius import autoclass
+            Environment = autoclass("android.os.Environment")
+            dl_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if dl_dir:
+                public_path = dl_dir.getAbsolutePath()
+                target_path = os.path.join(public_path, "UniversalVideos")
+                if is_directory_writable(target_path):
+                    print(f"[Paths] Using public Android download path: {target_path}")
+                    return target_path
+        except Exception as e:
+            print(f"[Paths] PyJNIus Environment download path check: {e}")
+
+        # 3. Try standard external shared download directories
+        candidates = [
+            "/storage/emulated/0/Download/UniversalVideos",
+            "/storage/emulated/0/Download",
+            "/sdcard/Download/UniversalVideos",
+            "/sdcard/Download",
+            "/storage/emulated/0/Movies",
+            "/sdcard/Movies"
+        ]
+        for candidate in candidates:
+            if is_directory_writable(candidate):
+                print(f"[Paths] Using candidate Android download path: {candidate}")
+                return candidate
 
         # 4. Safe internal fallback if all external attempts fail
         safe_fallback = os.path.join(get_base_data_dir(), "downloads")
@@ -154,10 +218,9 @@ def get_default_download_dir() -> str:
     # Desktop standard downloads
     home = os.path.expanduser("~")
     desktop_dl = os.path.join(home, "Downloads", "UniversalVideos")
-    try:
-        os.makedirs(desktop_dl, exist_ok=True)
+    if is_directory_writable(desktop_dl):
         return desktop_dl
-    except Exception:
-        fallback = os.path.join(get_base_data_dir(), "downloads")
-        os.makedirs(fallback, exist_ok=True)
-        return fallback
+    fallback = os.path.join(get_base_data_dir(), "downloads")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+

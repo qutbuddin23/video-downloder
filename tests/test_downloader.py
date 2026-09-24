@@ -5,6 +5,7 @@ Unit tests for Downloader Engine and File Sanitization.
 import os
 import shutil
 import tempfile
+from unittest.mock import patch, MagicMock
 import pytest
 from core.database import Database
 from core.downloader import sanitize_filename, DownloadManager
@@ -102,5 +103,50 @@ def test_direct_http_fallback_to_ytdlp(temp_db):
             task._run()
             mock_direct.assert_called_once()
             mock_ytdlp.assert_called_once()
+
+
+def test_safe_stream_and_ytdl_logger():
+    from core.paths import SafeStreamWrapper, SafeYtdlLogger
+
+    # Test string target wrapped in SafeStreamWrapper
+    dummy_str = "not a stream"
+    safe = SafeStreamWrapper(dummy_str)
+    assert safe.write("test log message\n") == 17
+    safe.flush()  # Must not raise
+
+    # Test SafeYtdlLogger methods
+    logger = SafeYtdlLogger()
+    logger.debug("debug message")
+    logger.info("info message")
+    logger.warning("warning message")
+    logger.error("error message")
+    logger.write("write message")
+    logger.flush()
+
+
+def test_writable_directory_and_auto_migration(tmp_path):
+    from core.paths import is_directory_writable
+    from core.downloader import DownloadTask
+    from core.database import Database
+
+    writable_dir = str(tmp_path / "writable")
+    assert is_directory_writable(writable_dir) is True
+
+    # Test unwritable directory migration
+    db = Database(str(tmp_path / "test.db"))
+    task = DownloadTask(
+        task_id="mig_test_123",
+        url="https://www.example.com/video",
+        title="Migration Test",
+        format_selector="b",
+        direct_url=None,
+        output_dir="Z:\\NonExistent\\Unwritable\\Path",
+        db=db
+    )
+
+    with patch("core.downloader.is_directory_writable", side_effect=lambda p: p != "Z:\\NonExistent\\Unwritable\\Path"):
+        with patch.object(task, "_download_via_ytdlp"):
+            task._run()
+            assert task.output_dir != "Z:\\NonExistent\\Unwritable\\Path"
 
 

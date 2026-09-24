@@ -5,6 +5,7 @@ pause/resume, progress, speed, ETA, and state persistence in SQLite.
 """
 
 import os
+import sys
 import re
 import time
 import uuid
@@ -14,10 +15,66 @@ from typing import Dict, Any, Optional
 import requests
 from core.database import Database
 from core.storage_manager import format_bytes
-from core.paths import get_default_download_dir
+from core.paths import get_default_download_dir, is_directory_writable, get_base_data_dir
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
+
+
+class SafeStreamWrapper:
+    """Wraps sys.stdout / sys.stderr so any .write() or .flush() calls never crash."""
+    def __init__(self, target):
+        self._target = target
+
+    def write(self, s):
+        try:
+            if hasattr(self._target, "write") and callable(self._target.write):
+                return self._target.write(str(s))
+        except Exception:
+            pass
+        return len(s) if isinstance(s, (str, bytes)) else 0
+
+    def flush(self):
+        try:
+            if hasattr(self._target, "flush") and callable(self._target.flush):
+                self._target.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._target, name, None)
+
+
+# Safeguard standard error and standard output against string or non-stream replacements on Android
+if not hasattr(sys.stderr, "write") or isinstance(sys.stderr, str):
+    sys.stderr = SafeStreamWrapper(sys.stderr)
+if not hasattr(sys.stdout, "write") or isinstance(sys.stdout, str):
+    sys.stdout = SafeStreamWrapper(sys.stdout)
+
+
+class SafeYtdlLogger:
+    """Safe logger for yt-dlp that never relies on sys.stderr or sys.stdout having a write attribute."""
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        try:
+            print(f"[yt-dlp] {msg}")
+        except Exception:
+            pass
+
+    def write(self, msg):
+        pass
+
+    def flush(self):
+        pass
+
 
 
 def sanitize_filename(name: str) -> str:
@@ -298,10 +355,20 @@ class DownloadTask:
             if any(target_to_check.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]):
                 raise ValueError(f"Target URL is an image/asset ({target_to_check.split('.')[-1]}), not a valid video.")
 
+            # Ensure output directory is actually writable before starting write operations
+            if not is_directory_writable(self.output_dir):
+                print(f"[Downloader] self.output_dir '{self.output_dir}' is NOT writable! Migrating...")
+                self.output_dir = get_default_download_dir()
+                if not is_directory_writable(self.output_dir):
+                    self.output_dir = os.path.join(get_base_data_dir(), "downloads")
+                    os.makedirs(self.output_dir, exist_ok=True)
+                print(f"[Downloader] Migrated output_dir to: '{self.output_dir}'")
+
             self.db.update_download_progress(
                 self.task_id, status="downloading", progress=0.0,
                 downloaded_bytes=0, total_bytes=0, speed=0.0
             )
+
 
             # Strategy 1: Attempt direct HTTP chunked download if direct_url has direct media extension
             download_succeeded = False
@@ -508,6 +575,8 @@ class DownloadTask:
             "no_warnings": True,
             "nocheckcertificate": True,
             "geo_bypass": True,
+            "logtostderr": False,
+            "logger": SafeYtdlLogger(),
             "concurrent_fragment_downloads": 4,  # High speed multi-part downloads
             "buffersize": 1024 * 1024,          # 1 MB buffer for fast writes
             "retries": 10,
@@ -600,8 +669,11 @@ class DownloadManager:
         saved_dir = self.db.get_setting("download_folder", default_dir)
 
         # Auto-migrate away from internal sandbox or non-writable paths
-        if not saved_dir or "/data/user/0" in saved_dir or ".universal_downloader" in saved_dir or not os.path.exists(saved_dir) or not os.access(saved_dir, os.W_OK):
+        if not saved_dir or not is_directory_writable(saved_dir):
             saved_dir = default_dir
+            if not is_directory_writable(saved_dir):
+                saved_dir = os.path.join(get_base_data_dir(), "downloads")
+                os.makedirs(saved_dir, exist_ok=True)
             self.db.set_setting("download_folder", saved_dir)
 
         self.download_folder = saved_dir

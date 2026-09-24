@@ -63,9 +63,10 @@
                     <div class="card-title"><span>📥</span> Paste Video or Page URL</div>
                     <div class="url-input-container">
                         <input type="text" id="url-input" class="url-input-box" placeholder="https://example.com/video or page..." />
-                        <div class="btn-row">
-                            <button id="btn-paste" class="btn btn-secondary">📋 Paste</button>
-                            <button id="btn-analyze" class="btn btn-primary">🔍 Analyze & Sniff</button>
+                        <div class="btn-row" style="display:flex; gap:8px;">
+                            <button id="btn-paste" class="btn btn-secondary" style="flex:1;">📋 Paste</button>
+                            <button id="btn-direct-download" class="btn btn-primary" onclick="onDirectDownloadClicked()" style="flex:1.4; font-weight:700;">⚡ Direct Download</button>
+                            <button id="btn-analyze" class="btn btn-secondary" style="flex:1;">🔍 Analyze</button>
                         </div>
                     </div>
 

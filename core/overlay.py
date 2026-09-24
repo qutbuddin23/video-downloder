@@ -10,6 +10,7 @@ import time
 import threading
 from typing import Optional, Callable
 import re
+from core.paths import is_android
 
 try:
     import tkinter as tk
@@ -270,6 +271,7 @@ except (ImportError, ModuleNotFoundError):
 
 class AndroidBubbleTouchListener(PythonJavaClass):
     """Module-level touch listener for Android floating overlay view."""
+    __javacontext__ = 'app'
     __javainterfaces__ = ['android/view/View$OnTouchListener']
 
     def __init__(self, overlay_ref, wm_ref, params_ref, view_ref):
@@ -282,7 +284,7 @@ class AndroidBubbleTouchListener(PythonJavaClass):
         self.initial_y = 0
         self.initial_touch_x = 0.0
         self.initial_touch_y = 0.0
-        self.is_click = False
+        self.has_moved = False
 
     @java_method('(Landroid/view/View;Landroid/view/MotionEvent;)Z')
     def onTouch(self, view, event):
@@ -295,19 +297,19 @@ class AndroidBubbleTouchListener(PythonJavaClass):
                 self.initial_y = self.params_ref.y
                 self.initial_touch_x = event.getRawX()
                 self.initial_touch_y = event.getRawY()
-                self.is_click = True
+                self.has_moved = False
                 return True
             elif action == MotionEvent.ACTION_MOVE:
                 dx = int(event.getRawX() - self.initial_touch_x)
                 dy = int(event.getRawY() - self.initial_touch_y)
-                if abs(dx) > 12 or abs(dy) > 12:
-                    self.is_click = False
+                if abs(dx) > 10 or abs(dy) > 10:
+                    self.has_moved = True
                 self.params_ref.x = self.initial_x + dx
                 self.params_ref.y = self.initial_y + dy
                 self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
                 return True
             elif action == MotionEvent.ACTION_UP:
-                if self.is_click:
+                if not self.has_moved:
                     self.overlay_ref._on_bubble_clicked()
                 return True
         except Exception as te:
@@ -331,9 +333,10 @@ class AndroidFloatingOverlay:
             from jnius import autoclass
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
+            if not activity:
+                return False
             Settings = autoclass("android.provider.Settings")
-            if activity:
-                return bool(Settings.canDrawOverlays(activity))
+            return bool(Settings.canDrawOverlays(activity))
         except Exception as e:
             print(f"[Overlay] can_draw_overlays check: {e}")
         return False
@@ -349,20 +352,27 @@ class AndroidFloatingOverlay:
                 try:
                     PythonActivity = autoclass("org.kivy.android.PythonActivity")
                     activity = PythonActivity.mActivity
-                    if activity:
-                        Intent = autoclass("android.content.Intent")
-                        Uri = autoclass("android.net.Uri")
-                        Settings = autoclass("android.provider.Settings")
-                        try:
-                            intent = Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:" + activity.getPackageName())
-                            )
-                            activity.startActivity(intent)
-                        except Exception:
-                            # Fallback without package URI if device doesn't support package-specific overlay intent
-                            intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                            activity.startActivity(intent)
+                    if not activity:
+                        return
+                    Intent = autoclass("android.content.Intent")
+                    Uri = autoclass("android.net.Uri")
+                    Settings = autoclass("android.provider.Settings")
+                    pkg = str(activity.getPackageName())
+                    
+                    try:
+                        intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse(f"package:{pkg}")
+                        )
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        activity.startActivity(intent)
+                        return
+                    except Exception as e1:
+                        print(f"[Overlay] Package intent fallback: {e1}")
+
+                    intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(intent)
                 except Exception as e:
                     print(f"[Overlay] open settings error: {e}")
             _open()
@@ -388,9 +398,9 @@ class AndroidFloatingOverlay:
                     PythonActivity = autoclass("org.kivy.android.PythonActivity")
                     activity = PythonActivity.mActivity
                     if not activity:
+                        print("[Overlay] PythonActivity.mActivity not available yet.")
                         return
 
-                    app_context = activity.getApplicationContext()
                     Context = autoclass("android.content.Context")
                     WindowManager = autoclass("android.view.WindowManager")
                     LayoutParams = autoclass("android.view.WindowManager$LayoutParams")
@@ -399,22 +409,31 @@ class AndroidFloatingOverlay:
                     TextView = autoclass("android.widget.TextView")
                     Color = autoclass("android.graphics.Color")
                     GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
+                    Build = autoclass("android.os.Build")
 
-                    wm = app_context.getSystemService(Context.WINDOW_SERVICE)
+                    # Use activity WindowManager (associated with window display tokens)
+                    try:
+                        wm = activity.getSystemService(Context.WINDOW_SERVICE)
+                    except Exception:
+                        wm = activity.getWindowManager()
                     self.window_manager = wm
 
-                    flags = LayoutParams.FLAG_NOT_FOCUSABLE | LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    # In Android 8.0+ (API 26+), must use TYPE_APPLICATION_OVERLAY (2038)
+                    layout_type = 2038 if Build.VERSION.SDK_INT >= 26 else 2002
+                    # FLAG_NOT_FOCUSABLE (8) | FLAG_LAYOUT_IN_SCREEN (256)
+                    flags = 8 | 256
+
                     params = LayoutParams(
-                        160, 160,
-                        LayoutParams.TYPE_APPLICATION_OVERLAY,
-                        flags,
-                        PixelFormat.TRANSLUCENT
+                        int(170), int(170),
+                        int(layout_type),
+                        int(flags),
+                        int(PixelFormat.TRANSLUCENT)
                     )
                     params.gravity = Gravity.TOP | Gravity.START
                     params.x = 24
                     params.y = 450
 
-                    btn = TextView(app_context)
+                    btn = TextView(activity)
                     btn.setText("⚡")
                     btn.setTextSize(26)
                     btn.setGravity(Gravity.CENTER)
@@ -432,10 +451,11 @@ class AndroidFloatingOverlay:
                     wm.addView(btn, params)
                     self.floating_view = btn
                     self.is_active = True
-                    print("[Overlay] Android Floating Button successfully mounted via ApplicationContext!")
+                    print("[Overlay] Android Floating Button successfully mounted!")
                     show_android_toast("⚡ Floating Bubble Active! Drag it anywhere on screen.")
                 except Exception as e:
                     print(f"[Overlay] Failed to mount Android floating button: {e}")
+                    show_android_toast(f"Overlay notice: {e}")
 
             _mount_floating_view()
             threading.Thread(target=self._clipboard_monitor_loop, daemon=True).start()
@@ -490,8 +510,7 @@ class AndroidFloatingOverlay:
 
 
 def is_running_on_android() -> bool:
-    import os
-    return "ANDROID_ARGUMENT" in os.environ or "ANDROID_PRIVATE" in os.environ or os.path.exists("/system/build.prop")
+    return is_android()
 
 
 class FloatingOverlayManager:

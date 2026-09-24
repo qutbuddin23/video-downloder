@@ -59,13 +59,21 @@ def trigger_auto_download(url: str):
         if result.get("success"):
             title = result.get("title", "Universal Video")
             formats = result.get("formats", [])
-            best_format = formats[0]["format_id"] if formats else "best"
+            # Prioritize format containing both audio and video
+            selected_fmt = next((f for f in formats if f.get("has_audio") and f.get("has_video")), None)
+            if not selected_fmt and formats:
+                selected_fmt = formats[0]
+
+            format_sel = selected_fmt.get("download_selector") if selected_fmt else "b/18/best[vcodec!=none][acodec!=none]/best"
+            quality_lbl = selected_fmt.get("quality_label", "Auto/Best") if selected_fmt else "Auto/Best"
+            direct_u = selected_fmt.get("direct_url") if selected_fmt else result.get("direct_url")
+
             dl_id = downloader.create_download(
                 url=url,
                 title=title,
-                quality_label="Auto/Best",
-                format_selector=best_format,
-                direct_url=result.get("direct_url"),
+                quality_label=quality_lbl,
+                format_selector=format_sel,
+                direct_url=direct_u,
                 thumbnail=result.get("thumbnail", ""),
                 duration=result.get("duration", 0),
                 auto_start=True

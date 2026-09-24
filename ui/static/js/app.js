@@ -207,7 +207,7 @@ async function triggerAnalyze(url) {
         }
 
         if (!data.success) {
-            alert(data.error_message || 'No downloadable streams detected on this page.');
+            showToast(data.error_message || 'No downloadable streams detected on this page.', 4500);
             return;
         }
 
@@ -215,7 +215,7 @@ async function triggerAnalyze(url) {
         renderVideoPreview(data);
     } catch (err) {
         statusText.style.display = 'none';
-        alert('Network or server error while analyzing URL.');
+        showToast('Network or server error while analyzing URL.', 4500);
     }
 }
 
@@ -322,7 +322,7 @@ async function startDownload(analysis, fmt) {
             switchTab('downloads');
         }
     } catch (err) {
-        alert('Failed to start download.');
+        showToast('Failed to start download.', 3500);
     }
 }
 
@@ -444,9 +444,13 @@ function renderDownloadsList(items) {
                         <span id="prog-mb-${item.id}">${((item.downloaded_bytes || 0) / (1024*1024)).toFixed(1)} MB</span>
                     </div>
                 ` : ''}
+                ${item.status === 'failed' && item.error_message ? `
+                    <div style="font-size:11px; color:#EF4444; margin-top:6px; word-break:break-all;">⚠️ ${item.error_message}</div>
+                ` : ''}
                 <div class="dl-actions">
                     ${isDownloading ? `<button class="btn btn-secondary btn-sm" onclick="pauseDownload('${item.id}')">⏸ Pause</button>` : ''}
                     ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">▶ Resume</button>` : ''}
+                    ${item.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryDownload('${item.url}')">🔄 Retry</button>` : ''}
                     ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">✕ Cancel</button>` : ''}
                     ${isCompleted ? `
                         <button class="btn btn-primary btn-sm" onclick="playVideo('${item.id}')">▶ Play</button>
@@ -1096,8 +1100,32 @@ async function showFloatingBubble() {
     }
 }
 
+// 1-Click Direct Download handler for URL input box
+async function onDirectDownloadClicked() {
+    let url = document.getElementById('url-input').value.trim();
+    if (!url) {
+        showToast('Checking clipboard for video link...', 2000);
+        await checkClipboardForVideo();
+        url = detectedVideoUrl || document.getElementById('url-input').value.trim();
+    }
+    if (!url) {
+        showToast('Please paste or type a video URL first!', 3000);
+        return;
+    }
+    quickAutoDownloadUrl(url);
+}
+
+function retryDownload(url) {
+    if (url) {
+        showToast('🔄 Retrying download...', 3000);
+        quickAutoDownloadUrl(url);
+    }
+}
+
 // Export functions to window for HTML onclick attributes
 window.quickAutoDownloadDetected = quickAutoDownloadDetected;
+window.onDirectDownloadClicked = onDirectDownloadClicked;
+window.retryDownload = retryDownload;
 window.onFabClicked = onFabClicked;
 window.requestOverlayPermission = requestOverlayPermission;
 window.showFloatingBubble = showFloatingBubble;

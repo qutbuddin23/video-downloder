@@ -8,24 +8,28 @@ import os
 import sys
 
 def is_android() -> bool:
-    """Detect if running on Android OS."""
-    return "ANDROID_ARGUMENT" in os.environ or "ANDROID_PRIVATE" in os.environ or os.path.exists("/system/build.prop")
+    """Bulletproof Android detection across all p4a, Kivy, and Android OS versions."""
+    try:
+        from kivy.utils import platform
+        if platform == "android":
+            return True
+    except Exception:
+        pass
+    if hasattr(sys, "getandroidapilevel"):
+        return True
+    if any(k in os.environ for k in ["ANDROID_ARGUMENT", "ANDROID_PRIVATE", "ANDROID_ROOT", "ANDROID_DATA", "PYTHON_SERVICE_ARGUMENT"]):
+        return True
+    try:
+        from jnius import autoclass
+        if autoclass("org.kivy.android.PythonActivity"):
+            return True
+    except Exception:
+        pass
+    return False
 
 def get_base_data_dir() -> str:
     """Return a safe writable root directory for database, vault, and app data."""
-    # 1. Check Android environment variables set by python-for-android
-    for env_var in ["ANDROID_PRIVATE", "ANDROID_ARGUMENT"]:
-        val = os.environ.get(env_var)
-        if val:
-            try:
-                os.makedirs(val, exist_ok=True)
-                app_dir = os.path.join(val, ".universal_downloader")
-                os.makedirs(app_dir, exist_ok=True)
-                return app_dir
-            except Exception:
-                pass
-
-    # 2. Try PyJNIus Context.getFilesDir() if available
+    # 1. Try PyJNIus Context.getFilesDir() (100% writable on Android internal storage)
     try:
         from jnius import autoclass
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
@@ -36,6 +40,18 @@ def get_base_data_dir() -> str:
             return app_dir
     except Exception:
         pass
+
+    # 2. Check Android environment variables set by python-for-android
+    for env_var in ["ANDROID_PRIVATE", "ANDROID_ARGUMENT"]:
+        val = os.environ.get(env_var)
+        if val:
+            try:
+                os.makedirs(val, exist_ok=True)
+                app_dir = os.path.join(val, ".universal_downloader")
+                os.makedirs(app_dir, exist_ok=True)
+                return app_dir
+            except Exception:
+                pass
 
     # 3. Android current directory fallback
     if is_android():
@@ -127,10 +143,13 @@ def get_default_download_dir() -> str:
                 if ext_dir:
                     ext_path = ext_dir.getAbsolutePath()
                     os.makedirs(ext_path, exist_ok=True)
-                    print(f"[Paths] Using Context external files path: {ext_path}")
-                    return ext_path
         except Exception as e:
             print(f"[Paths] getExternalFilesDir notice: {e}")
+
+        # 4. Safe internal fallback if all external attempts fail
+        safe_fallback = os.path.join(get_base_data_dir(), "downloads")
+        os.makedirs(safe_fallback, exist_ok=True)
+        return safe_fallback
 
     # Desktop standard downloads
     home = os.path.expanduser("~")

@@ -62,13 +62,16 @@ class AndroidNotificationHelper:
                 NotificationChannel = autoclass("android.app.NotificationChannel")
                 NotificationManager = autoclass("android.app.NotificationManager")
                 Context = autoclass("android.content.Context")
+                String = autoclass("java.lang.String")
                 nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
                 channel = NotificationChannel(
-                    cls.CHANNEL_ID,
-                    cls.CHANNEL_NAME,
+                    String(cls.CHANNEL_ID),
+                    String(cls.CHANNEL_NAME),
                     NotificationManager.IMPORTANCE_LOW
                 )
-                channel.setDescription("Progress and completion of video downloads")
+                channel.setDescription(String("Progress and completion of video downloads"))
+                channel.enableVibration(False)
+                channel.setSound(None, None)
                 nm.createNotificationChannel(channel)
             cls._channel_created = True
         except Exception as e:
@@ -77,7 +80,7 @@ class AndroidNotificationHelper:
     @classmethod
     def update_progress(cls, notification_id: int, title: str, progress: float, speed_str: str = ""):
         try:
-            from jnius import autoclass
+            from jnius import autoclass, cast
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
             if not activity:
@@ -88,27 +91,39 @@ class AndroidNotificationHelper:
             NotificationManager = autoclass("android.app.NotificationManager")
             Notification = autoclass("android.app.Notification")
             Context = autoclass("android.content.Context")
+            String = autoclass("java.lang.String")
             nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
 
-            builder = Notification.Builder(context, cls.CHANNEL_ID)
-            builder.setContentTitle(f"⬇ {title[:40]}")
+            title_str = String(f"⬇ {title[:40]}")
             sub_text = f"Downloading: {progress:.1f}%"
             if speed_str:
                 sub_text += f" • {speed_str}"
-            builder.setContentText(sub_text)
-            builder.setSmallIcon(context.getApplicationInfo().icon)
+            body_str = String(sub_text)
+
+            builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            builder.setContentTitle(cast("java.lang.CharSequence", title_str))
+            builder.setContentText(cast("java.lang.CharSequence", body_str))
+
+            icon_id = context.getApplicationInfo().icon
+            if not icon_id:
+                try:
+                    android_R = autoclass("android.R$drawable")
+                    icon_id = android_R.stat_sys_download
+                except Exception:
+                    icon_id = 17301634
+            builder.setSmallIcon(int(icon_id))
             builder.setProgress(100, int(progress), False)
             builder.setOngoing(True)
             builder.setOnlyAlertOnce(True)
 
-            nm.notify(notification_id, builder.build())
-        except Exception:
-            pass
+            nm.notify(int(notification_id), builder.build())
+        except Exception as e:
+            print(f"[Notifications] update_progress notice: {e}")
 
     @classmethod
     def show_complete(cls, notification_id: int, title: str):
         try:
-            from jnius import autoclass
+            from jnius import autoclass, cast
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             activity = PythonActivity.mActivity
             if not activity:
@@ -119,19 +134,28 @@ class AndroidNotificationHelper:
             NotificationManager = autoclass("android.app.NotificationManager")
             Notification = autoclass("android.app.Notification")
             Context = autoclass("android.content.Context")
+            String = autoclass("java.lang.String")
             nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
 
-            builder = Notification.Builder(context, cls.CHANNEL_ID)
-            builder.setContentTitle("✅ Download Complete!")
-            builder.setContentText(title[:50])
-            builder.setSmallIcon(context.getApplicationInfo().icon)
+            builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            builder.setContentTitle(cast("java.lang.CharSequence", String("✅ Download Complete!")))
+            builder.setContentText(cast("java.lang.CharSequence", String(title[:50])))
+
+            icon_id = context.getApplicationInfo().icon
+            if not icon_id:
+                try:
+                    android_R = autoclass("android.R$drawable")
+                    icon_id = android_R.stat_sys_download_done
+                except Exception:
+                    icon_id = 17301633
+            builder.setSmallIcon(int(icon_id))
             builder.setProgress(0, 0, False)
             builder.setOngoing(False)
             builder.setAutoCancel(True)
 
-            nm.notify(notification_id, builder.build())
-        except Exception:
-            pass
+            nm.notify(int(notification_id), builder.build())
+        except Exception as e:
+            print(f"[Notifications] show_complete notice: {e}")
 
     @classmethod
     def cancel(cls, notification_id: int):
@@ -145,9 +169,9 @@ class AndroidNotificationHelper:
             NotificationManager = autoclass("android.app.NotificationManager")
             Context = autoclass("android.content.Context")
             nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
-            nm.cancel(notification_id)
-        except Exception:
-            pass
+            nm.cancel(int(notification_id))
+        except Exception as e:
+            print(f"[Notifications] cancel notice: {e}")
 
 
 def open_video_in_external_player(file_path: str) -> bool:
@@ -169,21 +193,20 @@ def open_video_in_external_player(file_path: str) -> bool:
                     File = autoclass("java.io.File")
                     file_obj = File(file_path)
 
-                    intent = Intent(Intent.ACTION_VIEW)
+                    # Disable StrictMode VmPolicy to allow Uri.fromFile without FileUriExposedException
                     try:
-                        FileProvider = autoclass("androidx.core.content.FileProvider")
-                        uri = FileProvider.getUriForFile(
-                            activity.getApplicationContext(),
-                            activity.getPackageName() + ".fileprovider",
-                            file_obj
-                        )
-                        intent.setDataAndType(uri, "video/*")
-                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    except Exception:
-                        uri = Uri.fromFile(file_obj)
-                        intent.setDataAndType(uri, "video/*")
+                        StrictMode = autoclass("android.os.StrictMode")
+                        VmPolicyBuilder = autoclass("android.os.StrictMode$VmPolicy$Builder")
+                        builder = VmPolicyBuilder()
+                        StrictMode.setVmPolicy(builder.build())
+                    except Exception as sme:
+                        print(f"[OpenPlayer] StrictMode policy notice: {sme}")
 
+                    intent = Intent(Intent.ACTION_VIEW)
+                    uri = Uri.fromFile(file_obj)
+                    intent.setDataAndType(uri, "video/*")
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     activity.startActivity(intent)
                     print(f"[OpenPlayer] Launched external player for {file_path}")
             except Exception as ex:
@@ -468,8 +491,8 @@ class DownloadManager:
         default_dir = get_default_download_dir()
         saved_dir = self.db.get_setting("download_folder", default_dir)
 
-        # Auto-migrate away from internal sandbox or invalid paths
-        if not saved_dir or "/data/user/0" in saved_dir or ".universal_downloader" in saved_dir or not os.path.exists(saved_dir):
+        # Auto-migrate away from internal sandbox or non-writable paths
+        if not saved_dir or "/data/user/0" in saved_dir or ".universal_downloader" in saved_dir or not os.path.exists(saved_dir) or not os.access(saved_dir, os.W_OK):
             saved_dir = default_dir
             self.db.set_setting("download_folder", saved_dir)
 

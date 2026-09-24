@@ -108,7 +108,10 @@
 
                     <div class="btn-row" style="margin-top:10px; gap:8px;">
                         <button id="btn-watch-now" class="btn btn-secondary" style="flex:1;" onclick="watchAnalyzedVideo()">
-                            ▶ Watch Now
+                            ▶ Preview
+                        </button>
+                        <button id="btn-watch-phone" class="btn btn-secondary" style="flex:1;" onclick="openPreviewInPhonePlayer()">
+                            📱 Phone Player
                         </button>
                         <button id="btn-start-download" class="btn btn-primary" style="flex:1.4;">
                             ⬇ Download
@@ -326,8 +329,34 @@
                 </div>
                 <video id="media-player" class="video-player" controls playsinline></video>
                 <div id="player-error-msg" style="display:none; padding:12px; margin-top:10px; background:rgba(239, 68, 68, 0.15); border:1px solid #EF4444; border-radius:8px; font-size:12px; color:#FCA5A5; text-align:center;">
-                    <div style="margin-bottom:8px;">⚠️ WebView cannot decode this stream.</div>
-                    <button class="btn btn-primary btn-sm" onclick="openCurrentInExternalPlayer()" style="font-size:12px;">📱 Play in Phone Video Player (VLC / MX / Gallery)</button>
+                    <div style="margin-bottom:8px;">⚠️ In-App WebView cannot stream this format directly.</div>
+                    <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+                        <button class="btn btn-primary btn-sm" onclick="openCurrentInExternalPlayer()" style="font-size:12px;">📱 Open in Phone Player (VLC / MX)</button>
+                        <button class="btn btn-primary btn-sm" onclick="startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0])" style="font-size:12px; background:#10B981;">⬇ Download to Watch Offline</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Overlay Permission Guide Modal -->
+        <div id="overlay-permission-modal" class="modal-overlay">
+            <div class="modal-content" style="max-width:340px; text-align:center; padding:20px;">
+                <div style="font-size:36px; margin-bottom:8px;">⚡</div>
+                <div style="font-size:16px; font-weight:700; margin-bottom:8px; color:#EEF2FF;">Enable Floating Bubble</div>
+                <p style="font-size:12px; color:#94A3B8; line-height:1.5; margin-bottom:16px;">
+                    To let the ⚡ bubble float over other apps (YouTube, Chrome, TikTok, Instagram):
+                    <br><br>
+                    <strong style="color:#C7D2FE;">1. Tap "Open Settings" below</strong><br>
+                    <strong style="color:#C7D2FE;">2. Turn ON "Allow display over other apps"</strong><br>
+                    <strong style="color:#C7D2FE;">3. Return here and tap "Show Bubble"</strong>
+                </p>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button class="btn btn-primary" onclick="requestOverlayPermissionAndCloseModal()" style="font-weight:700; padding:10px;">
+                        ⚙️ Open Android Settings
+                    </button>
+                    <button class="btn btn-secondary" onclick="closeOverlayModal()" style="padding:8px;">
+                        Cancel
+                    </button>
                 </div>
             </div>
         </div>

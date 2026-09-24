@@ -26,6 +26,26 @@ def format_duration(seconds: Optional[int]) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+def is_valid_media_url(u: str) -> bool:
+    """Strictly validates whether a URL points to a legitimate media stream/file."""
+    if not u or not isinstance(u, str):
+        return False
+    u_strip = u.strip()
+    if not (u_strip.startswith("http://") or u_strip.startswith("https://")):
+        return False
+    clean_u = u_strip.split("?")[0].lower()
+    disallowed = (
+        ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+        ".css", ".js", ".json", ".xml", ".html", ".htm", ".txt",
+        ".woff", ".woff2", ".ttf", ".eot"
+    )
+    if any(clean_u.endswith(ext) for ext in disallowed):
+        return False
+    if "data:image/" in clean_u:
+        return False
+    return True
+
+
 class MediaDetector:
     DEFAULT_HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -44,7 +64,7 @@ class MediaDetector:
             "socket_timeout": 15,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "ios", "mweb", "web"]
+                    "player_client": ["android", "android_vr", "web"]
                 }
             }
         }
@@ -65,9 +85,11 @@ class MediaDetector:
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    return self._process_ytdlp_info(info, url)
+                    result = self._process_ytdlp_info(info, url)
+                    # If yt-dlp detected valid video formats, return immediately
+                    if result.get("success") and result.get("formats") and any(f.get("has_video") for f in result["formats"]):
+                        return result
         except Exception as e:
-            # yt-dlp failed or unsupported extractor, fall back to deep webpage scraping
             error_str = str(e).lower()
             if "drm" in error_str or "encrypted" in error_str or "protected" in error_str:
                 return {
@@ -103,16 +125,41 @@ class MediaDetector:
         audio_options = []
 
         for f in formats_raw:
-            fmt_id = f.get("format_id")
-            ext = f.get("ext") or "mp4"
+            fmt_id = str(f.get("format_id") or "").lower()
+            ext = (f.get("ext") or "mp4").lower()
+            url = f.get("url") or ""
+
+            # Strictly reject storyboards, images, or non-media formats
+            if fmt_id.startswith("sb") or ext in ["mhtml", "jpg", "jpeg", "png", "webp", "gif", "svg", "ico"]:
+                continue
+            if url and not is_valid_media_url(url) and not f.get("manifest_url"):
+                continue
+
             vcodec = f.get("vcodec") or "none"
             acodec = f.get("acodec") or "none"
+            video_ext = f.get("video_ext") or "none"
+            audio_ext = f.get("audio_ext") or "none"
             height = f.get("height")
             filesize = f.get("filesize") or f.get("filesize_approx") or 0
-            url = f.get("url")
 
-            is_video = vcodec != "none"
-            is_audio = acodec != "none"
+            # Comprehensive check for video presence
+            is_video = (
+                (vcodec != "none" and vcodec is not None)
+                or (video_ext != "none" and video_ext is not None)
+                or (height is not None and int(height) > 0)
+                or (ext in ["mp4", "webm", "mkv", "mov", "flv", "avi", "3gp", "ts", "m3u8", "mpd"] and acodec != "only")
+            )
+            # If strictly audio-only
+            if vcodec == "none" and acodec != "none" and not height and ext in ["mp3", "m4a", "aac", "opus", "wav", "flac"]:
+                is_video = False
+
+            # Determine whether stream has audio
+            is_audio = (
+                (acodec != "none" and acodec is not None)
+                or (audio_ext != "none" and audio_ext is not None)
+                or ext in ["mp3", "m4a", "aac", "opus", "wav", "ogg"]
+                or (is_video and ext in ["mp4", "webm", "mkv", "mov", "3gp"])  # Pre-muxed files
+            )
 
             if is_video:
                 resolution_label = f"{height}p" if height else (f.get("resolution") or "Standard")
@@ -122,15 +169,15 @@ class MediaDetector:
                         "format_id": fmt_id,
                         "quality_label": resolution_label,
                         "resolution": resolution_label,
-                        "height": height or 0,
-                        "ext": ext,
+                        "height": int(height) if height else 0,
+                        "ext": ext if ext in ["mp4", "webm", "mkv", "mov"] else "mp4",
                         "codec": f"{vcodec}/{acodec}",
                         "filesize": filesize,
                         "filesize_str": format_bytes(filesize) if filesize > 0 else "Adaptive / Unknown",
                         "has_audio": is_audio,
                         "has_video": True,
                         "direct_url": url,
-                        "download_selector": f"best[height<={height}][ext=mp4][acodec!=none]/best[height<={height}][acodec!=none]/b/18/best" if height else "b/18/best[vcodec!=none][acodec!=none]/best"
+                        "download_selector": f"best[height<={height}][vcodec!=none][acodec!=none][format_id!^=sb]/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]" if height else "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
                     }
             elif is_audio and not is_video:
                 # Audio only stream
@@ -147,7 +194,7 @@ class MediaDetector:
                     "has_audio": True,
                     "has_video": False,
                     "direct_url": url,
-                    "download_selector": "bestaudio/best"
+                    "download_selector": "bestaudio[format_id!^=sb]/best"
                 })
 
         # Sort video options by height descending (e.g. 1080p, 720p, 480p)
@@ -157,30 +204,13 @@ class MediaDetector:
         best_audio = sorted(audio_options, key=lambda x: x["filesize"], reverse=True)[:2]
         all_formats = sorted_video + best_audio
 
-        # If no formats extracted, synthesize standard defaults
-        if not all_formats:
-            all_formats.append({
-                "format_id": "best",
-                "quality_label": "Best Available",
-                "resolution": "Auto",
-                "height": 0,
-                "ext": "mp4",
-                "codec": "auto",
-                "filesize": 0,
-                "filesize_str": "Standard",
-                "has_audio": True,
-                "has_video": True,
-                "direct_url": original_url,
-                "download_selector": "best"
-            })
-
         # Select the best direct URL that has both video and audio for in-app preview
         best_direct = next((f["direct_url"] for f in all_formats if f.get("has_audio") and f.get("has_video") and f.get("direct_url")), "")
-        if not best_direct and all_formats:
-            best_direct = all_formats[0].get("direct_url", "")
+        if not best_direct and sorted_video:
+            best_direct = sorted_video[0].get("direct_url", "")
 
         return {
-            "success": True,
+            "success": bool(all_formats),
             "title": title,
             "thumbnail": thumbnail,
             "duration": duration,
@@ -196,7 +226,7 @@ class MediaDetector:
     def _sniff_webpage(self, url: str) -> Dict[str, Any]:
         """
         Deep webpage scanner: Fetches HTML and inspects:
-        - HTML5 <video> tags and <source> elements
+        - HTML5 <video> tags and <source> elements (excluding images/SVGs)
         - OpenGraph & Twitter video metadata
         - HLS .m3u8 playlist URLs
         - MPEG-DASH .mpd manifest URLs
@@ -225,35 +255,51 @@ class MediaDetector:
         if not og_img:
             og_img = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']', html, re.IGNORECASE)
         if og_img and og_img.group(1):
-            thumbnail = urllib.parse.urljoin(url, og_img.group(1))
+            cand_thumb = urllib.parse.urljoin(url, og_img.group(1))
+            if not cand_thumb.lower().endswith(".svg"):
+                thumbnail = cand_thumb
 
         detected_urls = set()
 
-        # 1. HTML5 <video> & <source> tags
+        # 1. HTML5 <video> tags
         for v in re.finditer(r'<video[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
-            detected_urls.add(urllib.parse.urljoin(url, v.group(1)))
-        for s in re.finditer(r'<source[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
-            detected_urls.add(urllib.parse.urljoin(url, s.group(1)))
+            cand = urllib.parse.urljoin(url, v.group(1))
+            if is_valid_media_url(cand):
+                detected_urls.add(cand)
 
-        # 2. Meta tags (OpenGraph / Twitter card video)
+        # 2. <source> tags strictly for video/audio (ignore picture/srcset/svg)
+        for s in re.finditer(r'<source\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', html, re.IGNORECASE):
+            full_tag = s.group(0).lower()
+            if "image/" in full_tag or "srcset" in full_tag:
+                continue
+            cand = urllib.parse.urljoin(url, s.group(1))
+            if is_valid_media_url(cand):
+                detected_urls.add(cand)
+
+        # 3. Meta tags (OpenGraph / Twitter card video)
         for meta_name in ["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"]:
             m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(meta_name)}["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
             if not m:
                 m = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(meta_name)}["\']', html, re.IGNORECASE)
             if m and m.group(1):
-                detected_urls.add(urllib.parse.urljoin(url, m.group(1)))
+                cand = urllib.parse.urljoin(url, m.group(1))
+                if is_valid_media_url(cand):
+                    detected_urls.add(cand)
 
-        # 3. Regex search in page scripts for .m3u8, .mpd, .mp4
+        # 4. Regex search in page scripts for .m3u8, .mpd, .mp4, .webm
         m3u8_pattern = r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?'
         mpd_pattern = r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?'
-        mp4_pattern = r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv)(?:\?[^\s"\'<>]*)?'
+        mp4_pattern = r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:\?[^\s"\'<>]*)?'
 
         for match in re.findall(m3u8_pattern, html):
-            detected_urls.add(match)
+            if is_valid_media_url(match):
+                detected_urls.add(match)
         for match in re.findall(mpd_pattern, html):
-            detected_urls.add(match)
+            if is_valid_media_url(match):
+                detected_urls.add(match)
         for match in re.findall(mp4_pattern, html):
-            detected_urls.add(match)
+            if is_valid_media_url(match):
+                detected_urls.add(match)
 
         if not detected_urls:
             return {
@@ -268,7 +314,8 @@ class MediaDetector:
         # Build formats from detected URLs
         formats = []
         for i, media_url in enumerate(detected_urls):
-            ext = "m3u8" if ".m3u8" in media_url else ("mpd" if ".mpd" in media_url else "mp4")
+            clean_url = media_url.split("?")[0].lower()
+            ext = "m3u8" if clean_url.endswith(".m3u8") else ("mpd" if clean_url.endswith(".mpd") else "mp4")
             label = f"Stream {i+1} ({ext.upper()})"
             formats.append({
                 "format_id": f"sniffed_{i}",
@@ -282,8 +329,10 @@ class MediaDetector:
                 "has_audio": True,
                 "has_video": True,
                 "direct_url": media_url,
-                "download_selector": "best"
+                "download_selector": "best[format_id!^=sb]"
             })
+
+        best_direct = formats[0]["direct_url"] if formats else ""
 
         return {
             "success": True,
@@ -292,6 +341,7 @@ class MediaDetector:
             "duration": 0,
             "duration_str": "Stream",
             "source_url": url,
+            "direct_url": best_direct,
             "is_protected": False,
             "formats": formats,
             "detected_count": len(formats)

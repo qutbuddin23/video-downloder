@@ -55,6 +55,12 @@ def trigger_auto_download(url: str):
     global latest_auto_download_title, latest_auto_download_id
     try:
         url = url.strip()
+        # Strictly reject non-media or image links
+        clean_check = url.split("?")[0].lower()
+        if any(clean_check.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]):
+            print(f"[Auto-Download] Ignored non-video link: {url}")
+            return False, "", ""
+
         result = detector.analyze_url(url)
         if result.get("success"):
             title = result.get("title", "Universal Video")
@@ -64,7 +70,7 @@ def trigger_auto_download(url: str):
             if not selected_fmt and formats:
                 selected_fmt = formats[0]
 
-            format_sel = selected_fmt.get("download_selector") if selected_fmt else "b/18/best[vcodec!=none][acodec!=none]/best"
+            format_sel = selected_fmt.get("download_selector") if selected_fmt else "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
             quality_lbl = selected_fmt.get("quality_label", "Auto/Best") if selected_fmt else "Auto/Best"
             direct_u = selected_fmt.get("direct_url") if selected_fmt else result.get("direct_url")
 
@@ -555,6 +561,38 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             parts = path.split("/")
             download_id = parts[3]
             opened = downloader.open_in_player(download_id)
+            self.send_json({"success": opened})
+            return
+
+        if path == "/api/media/open-url":
+            media_url = body.get("url", "").strip()
+            if not media_url:
+                self.send_error_json("Missing stream URL", 400)
+                return
+            opened = False
+            if is_running_on_android():
+                try:
+                    from jnius import autoclass
+                    from android.runnable import run_on_ui_thread
+
+                    @run_on_ui_thread
+                    def _launch_url():
+                        try:
+                            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                            activity = PythonActivity.mActivity
+                            if activity:
+                                Intent = autoclass("android.content.Intent")
+                                Uri = autoclass("android.net.Uri")
+                                intent = Intent(Intent.ACTION_VIEW)
+                                intent.setDataAndType(Uri.parse(media_url), "video/*")
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                activity.startActivity(intent)
+                        except Exception as ex:
+                            print(f"[OpenMediaUrl] error: {ex}")
+                    _launch_url()
+                    opened = True
+                except Exception as e:
+                    print(f"[OpenMediaUrl] launch notice: {e}")
             self.send_json({"success": opened})
             return
 

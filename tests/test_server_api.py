@@ -171,5 +171,21 @@ def test_downloads_open_endpoint():
     assert res["success"] is False
 
 
+def test_media_open_url_endpoint():
+    code, raw = make_request("/api/media/open-url", method="POST", data={"url": "https://example.com/video.mp4"})
+    assert code == 200
+    res = json.loads(raw)
+    assert "success" in res
+
+
+def test_overlay_url_detection():
+    from core.overlay import detect_video_url
+    assert detect_video_url("https://www.youtube.com/watch?v=123") == "https://www.youtube.com/watch?v=123"
+    assert detect_video_url("https://www.theyarehuge.com/v/test-video") == "https://www.theyarehuge.com/v/test-video"
+    assert detect_video_url("Check out this link: https://cdn.example.com/video.mp4 cool right?") == "https://cdn.example.com/video.mp4"
+    assert detect_video_url("https://example.com/logo.svg") is None
+    assert detect_video_url("random text with no url") is None
+
+
 
 

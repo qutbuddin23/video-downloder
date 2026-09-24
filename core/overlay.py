@@ -209,12 +209,17 @@ class DesktopFloatingOverlay:
 
 
 def detect_video_url(text: str) -> Optional[str]:
-    """Extracts a valid video or media streaming URL from raw string."""
+    """Extracts any valid video or media streaming URL from raw string, rejecting static image/asset files."""
     if not text:
         return None
-    match = VIDEO_URL_PATTERN.search(text.strip())
-    if match:
-        return match.group(1).strip()
+    raw = text.strip()
+    urls = re.findall(r'https?://[^\s<>"\'`]+', raw)
+    for u in urls:
+        cand = u.strip(".,;:()[]{}<>\"'")
+        clean = cand.split("?")[0].lower()
+        if any(clean.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".css", ".js"]):
+            continue
+        return cand
     return None
 
 
@@ -411,11 +416,12 @@ class AndroidFloatingOverlay:
                     GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
                     Build = autoclass("android.os.Build")
 
-                    # Use activity WindowManager (associated with window display tokens)
+                    # Use Application Context or Activity WindowManager
+                    app_context = activity.getApplicationContext()
                     try:
-                        wm = activity.getSystemService(Context.WINDOW_SERVICE)
+                        wm = app_context.getSystemService(Context.WINDOW_SERVICE)
                     except Exception:
-                        wm = activity.getWindowManager()
+                        wm = activity.getSystemService(Context.WINDOW_SERVICE)
                     self.window_manager = wm
 
                     # In Android 8.0+ (API 26+), must use TYPE_APPLICATION_OVERLAY (2038)
@@ -445,8 +451,11 @@ class AndroidFloatingOverlay:
                     shape.setStroke(4, Color.parseColor("#818CF8"))
                     btn.setBackground(shape)
 
-                    self._touch_listener = AndroidBubbleTouchListener(self, wm, params, btn)
-                    btn.setOnTouchListener(self._touch_listener)
+                    try:
+                        self._touch_listener = AndroidBubbleTouchListener(self, wm, params, btn)
+                        btn.setOnTouchListener(self._touch_listener)
+                    except Exception as tle:
+                        print(f"[Overlay] TouchListener setup notice: {tle}")
 
                     wm.addView(btn, params)
                     self.floating_view = btn
@@ -470,10 +479,25 @@ class AndroidFloatingOverlay:
         return {"active": True, "needs_permission": False, "message": "⚡ Floating Bubble is now active on your screen! Drag it anywhere."}
 
     def _on_bubble_clicked(self):
+        # On Android 10+, background apps cannot read clipboard without input focus.
+        # Bring the activity forward so clipboard is accessed with 100% guarantee.
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if activity:
+                Intent = autoclass("android.content.Intent")
+                intent = Intent(activity, activity.getClass())
+                intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                activity.startActivity(intent)
+        except Exception as fe:
+            print(f"[Overlay] Focus bring-to-front notice: {fe}")
+
+        time.sleep(0.15)
         clip_text = get_android_clipboard_text()
         video_url = detect_video_url(clip_text)
         if video_url:
-            show_android_toast("⚡ Auto-Downloading detected video...")
+            show_android_toast("⚡ Video Detected! Starting Auto-Download...")
             if self.on_trigger_callback:
                 self.on_trigger_callback(video_url)
         else:

@@ -260,13 +260,20 @@ class DownloadTask:
         try:
             if self.is_paused or self.is_cancelled:
                 return
+
+            # Strict guard: Reject image or SVG URLs immediately
+            target_to_check = (self.direct_url or self.url).split("?")[0].lower()
+            if any(target_to_check.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]):
+                raise ValueError(f"Target URL is an image/asset ({target_to_check.split('.')[-1]}), not a valid video.")
+
             self.db.update_download_progress(
                 self.task_id, status="downloading", progress=0.0,
                 downloaded_bytes=0, total_bytes=0, speed=0.0
             )
 
-            # Strategy 1: Direct HTTP download if direct_url is a direct file (.mp4, .webm)
-            if self.direct_url and any(self.direct_url.lower().endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov"]):
+            # Strategy 1: Direct HTTP chunked download if direct_url has direct media extension (ignoring query tokens)
+            clean_direct = (self.direct_url or "").split("?")[0].lower()
+            if self.direct_url and any(clean_direct.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
                 self._download_direct_http()
             else:
                 # Strategy 2: yt-dlp download with progress hook
@@ -308,6 +315,12 @@ class DownloadTask:
 
         session = requests.Session()
         resp = session.get(self.direct_url, headers=headers, stream=True, timeout=25)
+        
+        # Verify content type is not an image or SVG
+        c_type = resp.headers.get("content-type", "").lower()
+        if "image/" in c_type or "svg" in c_type or "text/html" in c_type:
+            raise ValueError(f"Server returned non-video content type ({c_type}).")
+
         total_size = downloaded
         if "content-length" in resp.headers:
             total_size += int(resp.headers["content-length"])
@@ -365,6 +378,20 @@ class DownloadTask:
                 os.remove(final_path)
             os.rename(part_path, final_path)
             file_size = os.path.getsize(final_path)
+
+            # Security sanity check: Disallow tiny files that contain HTML/SVG markup
+            if file_size < 1024:
+                try:
+                    with open(final_path, "rb") as check_f:
+                        head = check_f.read(256).lower()
+                        if b"<svg" in head or b"<!doctype html" in head or b"<html" in head:
+                            os.remove(final_path)
+                            raise ValueError("Downloaded file is HTML/SVG markup, not a valid video.")
+                except Exception as ve:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    raise ve
+
             self.db.update_download_filepath(self.task_id, final_path, file_size)
             self.db.update_download_progress(
                 self.task_id, status="completed", progress=100.0,
@@ -407,12 +434,14 @@ class DownloadTask:
                         self.notification_id, self.title, prog, speed_str
                     )
 
-        # Build resilient format selector that guarantees video+audio without requiring ffmpeg
+        # Build resilient format selector that guarantees video+audio without selecting storyboards/images
         format_sel = self.format_selector or "b"
-        if "+" in format_sel:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none]/best"
+        if "sb" in format_sel or format_sel == "best":
+            format_sel = "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/bestvideo[format_id!^=sb]+bestaudio/best[format_id!^=sb]"
+        elif "+" in format_sel:
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
         else:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none]/best"
+            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
 
         ydl_opts = {
             "format": format_sel,
@@ -428,7 +457,7 @@ class DownloadTask:
             "fragment_retries": 10,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "ios", "mweb", "web"]
+                    "player_client": ["android", "android_vr", "web"]
                 }
             }
         }
@@ -468,6 +497,20 @@ class DownloadTask:
 
         if final_file and os.path.exists(final_file):
             file_size = os.path.getsize(final_file)
+
+            # Security sanity check: Disallow tiny files that contain HTML/SVG markup
+            if file_size < 1024:
+                try:
+                    with open(final_file, "rb") as check_f:
+                        head = check_f.read(256).lower()
+                        if b"<svg" in head or b"<!doctype html" in head or b"<html" in head:
+                            os.remove(final_file)
+                            raise ValueError("Downloaded file is HTML/SVG markup, not a valid video.")
+                except Exception as ve:
+                    if os.path.exists(final_file):
+                        os.remove(final_file)
+                    raise ve
+
             self.db.update_download_filepath(self.task_id, final_file, file_size)
             self.db.update_download_progress(
                 self.task_id, status="completed", progress=100.0,

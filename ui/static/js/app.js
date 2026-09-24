@@ -279,16 +279,12 @@ function watchAnalyzedVideo() {
         const extBtn = document.getElementById('btn-player-open-external');
         const errBox = document.getElementById('player-error-msg');
         if (errBox) errBox.style.display = 'none';
-        if (extBtn) extBtn.style.display = 'none';
+        if (extBtn) extBtn.style.display = 'inline-block';
 
         // Route through local stream proxy to prevent 403 Forbidden on mobile
         player.onerror = () => {
             if (errBox) {
                 errBox.style.display = 'block';
-                errBox.innerHTML = `
-                    <div style="margin-bottom:8px;">⚠️ WebView video player could not stream this video directly.</div>
-                    <button class="btn btn-primary btn-sm" onclick="startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0])" style="font-size:12px;">⬇ Download to Phone to Watch Offline</button>
-                `;
             }
         };
 
@@ -301,7 +297,48 @@ function watchAnalyzedVideo() {
     }
 }
 
+// Open analyzed video directly in Phone Video Player (VLC / MX / Gallery)
+async function openPreviewInPhonePlayer() {
+    if (!currentAnalysis) return;
+    let streamUrl = currentAnalysis.direct_url;
+    if (!streamUrl && selectedFormat && selectedFormat.direct_url) {
+        streamUrl = selectedFormat.direct_url;
+    }
+    if (!streamUrl && currentAnalysis.formats && currentAnalysis.formats.length > 0) {
+        streamUrl = currentAnalysis.formats[0].direct_url;
+    }
+
+    if (!streamUrl) {
+        showToast('⚡ Starting download to open in phone player...');
+        startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0]);
+        return;
+    }
+
+    showToast('📱 Launching in Phone Video Player...', 3000);
+    try {
+        const res = await fetch('/api/media/open-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: streamUrl })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            watchAnalyzedVideo();
+        }
+    } catch (_) {
+        watchAnalyzedVideo();
+    }
+}
+
 async function startDownload(analysis, fmt) {
+    if (!analysis || !fmt) return;
+    const targetUrl = fmt.direct_url || analysis.source_url;
+    const clean = (targetUrl || '').split('?')[0].toLowerCase();
+    if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) {
+        showToast('⚠️ Cannot download image/SVG file as video.', 4000);
+        return;
+    }
+
     try {
         const res = await fetch('/api/download', {
             method: 'POST',
@@ -312,7 +349,7 @@ async function startDownload(analysis, fmt) {
                 quality_label: fmt.quality_label,
                 format_selector: fmt.download_selector,
                 direct_url: fmt.direct_url,
-                thumbnail: analysis.thumbnail,
+                thumbnail: analysis.thumbnail && !analysis.thumbnail.startsWith('data:') ? analysis.thumbnail : '',
                 duration: analysis.duration
             })
         });
@@ -1087,17 +1124,46 @@ function startOverlayPolling() {
 
 // Launch floating bubble onto screen
 async function showFloatingBubble() {
+    try {
+        const statusRes = await fetch('/api/overlay/status');
+        if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (statusData.is_android && !statusData.can_draw) {
+                // Show permission guide modal directly
+                const modal = document.getElementById('overlay-permission-modal');
+                if (modal) {
+                    modal.classList.add('active');
+                    return;
+                }
+            }
+        }
+    } catch (_) {}
+
     showToast('🚀 Bringing Floating Bubble onto screen...', 3000);
     try {
         const res = await fetch('/api/overlay/show', { method: 'POST' });
         const data = await res.json();
-        if (data.message) {
+        if (data.needs_permission) {
+            const modal = document.getElementById('overlay-permission-modal');
+            if (modal) modal.classList.add('active');
+        } else if (data.message) {
             showToast(data.message, 5000);
         }
         await checkOverlayPermissionStatus();
     } catch (err) {
         showToast('Failed to start floating bubble.');
     }
+}
+
+function closeOverlayModal() {
+    const modal = document.getElementById('overlay-permission-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+async function requestOverlayPermissionAndCloseModal() {
+    closeOverlayModal();
+    showToast('⚙️ Opening Android Settings... Please enable Appear On Top.', 4000);
+    await requestOverlayPermission();
 }
 
 // 1-Click Direct Download handler for URL input box
@@ -1110,6 +1176,11 @@ async function onDirectDownloadClicked() {
     }
     if (!url) {
         showToast('Please paste or type a video URL first!', 3000);
+        return;
+    }
+    const clean = url.split('?')[0].toLowerCase();
+    if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) {
+        showToast('⚠️ Please enter a video link, not an image/SVG file.', 4000);
         return;
     }
     quickAutoDownloadUrl(url);
@@ -1128,7 +1199,10 @@ window.onDirectDownloadClicked = onDirectDownloadClicked;
 window.retryDownload = retryDownload;
 window.onFabClicked = onFabClicked;
 window.requestOverlayPermission = requestOverlayPermission;
+window.requestOverlayPermissionAndCloseModal = requestOverlayPermissionAndCloseModal;
+window.closeOverlayModal = closeOverlayModal;
 window.showFloatingBubble = showFloatingBubble;
+window.openPreviewInPhonePlayer = openPreviewInPhonePlayer;
 window.openInPhonePlayer = openInPhonePlayer;
 window.openCurrentInExternalPlayer = openCurrentInExternalPlayer;
 window.appGoBack = appGoBack;

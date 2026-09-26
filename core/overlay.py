@@ -565,17 +565,33 @@ class AndroidFloatingOverlay:
                         pass
                 _restore_window_flags()
         except Exception as ce:
-            print(f"[Overlay] Window focus toggle notice: {ce}")
-            clip_text = get_android_clipboard_text()
+            print(f"[Overlay] Window focus clipboard notice: {ce}")
 
-        # 2. Extract media URL from clipboard
-        video_url = detect_video_url(clip_text) or detect_video_url(getattr(self, "last_clipboard", ""))
-        if video_url:
-            show_android_toast("⚡ Video Detected! Downloading in background...")
+        # 2. If background clipboard reading was restricted by Android 10+, use micro-focus and immediately moveTaskToBack
+        if not clip_text:
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                if activity:
+                    Intent = autoclass("android.content.Intent")
+                    intent = Intent(activity, activity.getClass())
+                    intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    activity.startActivity(intent)
+                    time.sleep(0.12)
+                    clip_text = get_android_clipboard_text()
+                    activity.moveTaskToBack(True)
+            except Exception as fe:
+                print(f"[Overlay] Micro-focus notice: {fe}")
+
+        # 3. Extract media or cloud file URL from clipboard
+        target_url = detect_video_url(clip_text) or detect_video_url(getattr(self, "last_clipboard", ""))
+        if target_url:
+            show_android_toast("⚡ Link Detected! Starting download...")
             if self.on_trigger_callback:
-                self.on_trigger_callback(video_url)
+                self.on_trigger_callback(target_url)
         else:
-            show_android_toast("Universal Downloader: Copy a video link first, then tap ⚡")
+            show_android_toast("Universal Downloader: Copy any video or file link, then tap ⚡")
 
 
     def _clipboard_monitor_loop(self):

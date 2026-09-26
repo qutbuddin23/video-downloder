@@ -17,10 +17,29 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
 
-def is_direct_media_url(url: str) -> bool:
-    """Checks whether URL directly references a raw media file/stream without HTML webpage wrapping."""
+from core.mega import is_mega_url, get_mega_file_info
+from core.terabox import is_terabox_url, get_terabox_file_info
+
+DIRECT_DOWNLOAD_EXTS = (
+    # Video & Audio
+    ".mp4", ".webm", ".mkv", ".mov", ".m3u8", ".mpd", ".m4v", ".ts", ".flv", ".avi", ".3gp",
+    ".mp3", ".m4a", ".aac", ".opus", ".flac", ".wav", ".ogg",
+    # Archives & Compressed Files
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".tgz",
+    # Applications, Installers & Documents
+    ".apk", ".pdf", ".epub", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".exe", ".bin", ".dmg"
+)
+
+
+def is_direct_download_url(url: str) -> bool:
+    """Checks whether URL directly references a raw media file, archive, installer, or document."""
     clean = url.split("?")[0].lower()
-    return any(clean.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".m3u8", ".mpd", ".m4v", ".ts"])
+    return any(clean.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS)
+
+
+def is_direct_media_url(url: str) -> bool:
+    """Backwards-compatible wrapper for direct media and file URLs."""
+    return is_direct_download_url(url)
 
 
 
@@ -83,37 +102,49 @@ class MediaDetector:
 
     def analyze_url(self, url: str) -> Dict[str, Any]:
         """
-        Analyzes a URL using a dual-engine approach:
-        1. yt-dlp extractor for known platforms and complex streaming setups.
-        2. Fallback deep HTML5 & network manifest sniffer for arbitrary websites.
+        Analyzes a URL using a multi-engine approach:
+        1. Native MEGA.nz cloud resolver.
+        2. TeraBox / 1024tera multi-tier link extractor.
+        3. Fast path for direct file & media streams (.mp4, .zip, .apk, .pdf, etc.).
+        4. yt-dlp extractor for major video streaming platforms.
+        5. Direct HTTP stream probe for arbitrary direct download endpoints.
+        6. Fallback deep HTML5 & network manifest sniffer for arbitrary websites.
         """
         url = url.strip()
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "https://" + url
 
-        # Fast path: If the URL is already a direct media stream, bypass generic webpage scraping
-        if is_direct_media_url(url):
+        # 1. Native MEGA.nz Cloud Link Resolution
+        if is_mega_url(url):
+            return get_mega_file_info(url)
+
+        # 2. TeraBox Cloud Link Resolution
+        if is_terabox_url(url):
+            return get_terabox_file_info(url)
+
+        # 3. Fast path: Direct file or media URL (.mp4, .zip, .apk, .pdf, etc.)
+        if is_direct_download_url(url):
             clean = url.split("?")[0].lower()
             ext = "mp4"
-            for candidate in ["mp4", "webm", "mkv", "mov", "m3u8", "mpd", "m4v"]:
-                if clean.endswith(f".{candidate}"):
-                    ext = candidate
+            for candidate in DIRECT_DOWNLOAD_EXTS:
+                if clean.endswith(candidate):
+                    ext = candidate.lstrip('.')
                     break
             path_part = urllib.parse.urlsplit(url).path
             fname = os.path.basename(path_part)
-            raw_title = os.path.splitext(fname)[0] or "Direct Video Stream"
-            title = re.sub(r'[_.-]+', ' ', raw_title).strip() or "Direct Video Stream"
+            raw_title = os.path.splitext(fname)[0] or "Direct Download"
+            title = re.sub(r'[_.-]+', ' ', raw_title).strip() or "Direct Download"
             fmt = {
                 "format_id": "direct_stream",
-                "quality_label": f"Direct HD ({ext.upper()})",
-                "resolution": "HD Stream",
-                "height": 720,
+                "quality_label": f"Direct ({ext.upper()})",
+                "resolution": "Direct Stream",
+                "height": 720 if ext in ["mp4", "mkv", "webm", "mov"] else 0,
                 "ext": "mp4" if ext in ["m3u8", "mpd"] else ext,
-                "codec": "h264/aac",
+                "codec": "h264/aac" if ext in ["mp4", "mkv", "webm"] else "binary",
                 "filesize": 0,
                 "filesize_str": "Direct Stream",
-                "has_audio": True,
-                "has_video": True,
+                "has_audio": ext in ["mp4", "mkv", "webm", "mp3", "m4a", "wav"],
+                "has_video": ext in ["mp4", "mkv", "webm", "mov"],
                 "direct_url": url,
                 "download_selector": "direct",
                 "referer": url
@@ -124,7 +155,7 @@ class MediaDetector:
                 "title": title,
                 "thumbnail": "",
                 "duration": 0,
-                "duration_str": "Stream",
+                "duration_str": "Direct File",
                 "source_url": url,
                 "direct_url": url,
                 "is_protected": False,
@@ -132,14 +163,13 @@ class MediaDetector:
                 "detected_count": 1
             }
 
-        # First attempt: yt-dlp extraction
+        # 4. yt-dlp extraction for known platforms
         try:
             import yt_dlp
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
                     result = self._process_ytdlp_info(info, url)
-                    # If yt-dlp detected valid video formats, return immediately
                     if result.get("success") and result.get("formats") and any(f.get("has_video") for f in result["formats"]):
                         return result
         except Exception as e:
@@ -154,7 +184,57 @@ class MediaDetector:
                     "formats": []
                 }
 
-        # Fallback: Deep DOM & Network sniffer
+        # 5. Direct HTTP probe for arbitrary direct download endpoints
+        try:
+            probe = requests.get(url, headers=self.DEFAULT_HEADERS, stream=True, timeout=12, allow_redirects=True)
+            c_type = probe.headers.get("content-type", "").lower()
+            c_disp = probe.headers.get("content-disposition", "")
+            # If server responds with binary / media / download content rather than an HTML webpage
+            if probe.status_code in (200, 206) and not ("text/html" in c_type or "text/plain" in c_type):
+                fname = ""
+                if "filename=" in c_disp:
+                    m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';\r\n]+)', c_disp)
+                    if m:
+                        fname = urllib.parse.unquote(m.group(1).strip())
+                if not fname:
+                    path_part = urllib.parse.urlsplit(probe.url).path
+                    fname = os.path.basename(path_part)
+                if not fname:
+                    fname = "direct_download"
+                ext = os.path.splitext(fname)[1].lstrip('.').lower() or "bin"
+                content_len = int(probe.headers.get("content-length", 0))
+                fmt = {
+                    "format_id": "direct_stream",
+                    "quality_label": f"Direct ({ext.upper()})",
+                    "resolution": "Direct Stream",
+                    "height": 0,
+                    "ext": ext,
+                    "codec": c_type or "binary",
+                    "filesize": content_len,
+                    "filesize_str": format_bytes(content_len) if content_len else "Direct Stream",
+                    "has_audio": True,
+                    "has_video": True,
+                    "direct_url": probe.url,
+                    "download_selector": "direct",
+                    "referer": url
+                }
+                return {
+                    "success": True,
+                    "is_direct": True,
+                    "title": fname,
+                    "thumbnail": "",
+                    "duration": 0,
+                    "duration_str": "Direct File",
+                    "source_url": url,
+                    "direct_url": probe.url,
+                    "is_protected": False,
+                    "formats": [fmt],
+                    "detected_count": 1
+                }
+        except Exception as probe_err:
+            print(f"[Detector] Direct HTTP probe notice: {probe_err}")
+
+        # 6. Fallback: Deep DOM & Network sniffer
         return self._sniff_webpage(url)
 
     def _process_ytdlp_info(self, info: Dict[str, Any], original_url: str) -> Dict[str, Any]:

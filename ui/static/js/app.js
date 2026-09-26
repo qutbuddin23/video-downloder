@@ -17,7 +17,7 @@ let detectedVideoUrl = null;
 let lastDetectedVideoUrl = null;
 let overlayPollInterval = null;
 let isCheckingClipboard = false;
-const VIDEO_URL_REGEX = /(https?:\/\/[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov)))/i;
+const VIDEO_URL_REGEX = /(https?:\/\/[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|mega\.nz|mega\.io|mega\.co\.nz|terabox|1024tera|mirrobox|nephobox|freeterabox|4funbox|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov|mkv|avi|flv|mp3|m4a|aac|flac|wav|zip|rar|7z|tar|gz|apk|xapk|pdf|doc|docx|xls|xlsx|ppt|pptx|iso|dmg|exe)))/i;
 
 const DEFAULT_VIDEO_THUMB = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%236366F1"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h16V6H4zm6 2.5l6 3.5-6 3.5v-7z"/></svg>';
 
@@ -119,18 +119,41 @@ window.onAndroidBackPressed = function() {
 };
 
 // --- Thumbnail Proxy & Fallback Handler ---
+function getDefaultFileThumb(nameOrUrl = '') {
+    const s = (nameOrUrl || '').toLowerCase();
+    if (s.endsWith('.apk') || s.endsWith('.xapk')) {
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%2310B981"><path d="M16.6 6.1l1.5-2.6a.75.75 0 1 0-1.3-.8l-1.6 2.7c-1-.4-2.1-.6-3.2-.6s-2.2.2-3.2.6L7.2 2.7a.75.75 0 0 0-1.3.8l1.5 2.6C4.4 7.6 2.5 10.7 2.1 14.5h19.8c-.4-3.8-2.3-6.9-5.3-8.4zM8 11.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm8 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM3 16h18v1.5a2.5 2.5 0 0 1-2.5 2.5H5.5A2.5 2.5 0 0 1 3 17.5V16z"/></svg>';
+    }
+    if (s.endsWith('.zip') || s.endsWith('.rar') || s.endsWith('.7z') || s.endsWith('.tar') || s.endsWith('.gz')) {
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%23F59E0B"><path d="M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6 4v2h-2v-2h2zm-2 4h2v2h-2v-2zm-4-4v6H6v-6h2z"/></svg>';
+    }
+    if (s.endsWith('.pdf')) {
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%23EF4444"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9.5 8.5h-2v3H6V8h3.5c1.1 0 2 .9 2 2v.5c0 1.1-.9 2-2 2zm8 0h-2.5v1.5H17v1.5h-2v1.5h-1.5V8h4v2h-.5zm-5 4.5h-1.5V8H14v6.5h-1.5z"/></svg>';
+    }
+    if (s.includes('mega.nz') || s.includes('mega.io') || s.includes('mega.co.nz')) {
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%23DC2626"><circle cx="12" cy="12" r="10"/><path fill="%23FFFFFF" d="M7 8.5v7l3.5-3.5 3.5 3.5v-7l-3.5 3.5z"/></svg>';
+    }
+    if (s.includes('terabox') || s.includes('1024tera') || s.includes('mirrobox') || s.includes('nephobox')) {
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%230284C7"><circle cx="12" cy="12" r="10"/><path fill="%23FFFFFF" d="M12 6a4 4 0 0 0-4 4c0 .3.03.6.1.9A3.5 3.5 0 0 0 6 14.5a3.5 3.5 0 0 0 3.5 3.5h7a3.5 3.5 0 0 0 3.5-3.5c0-1.6-1.1-3-2.6-3.4.1-.3.1-.7.1-1.1a4 4 0 0 0-4-4z"/></svg>';
+    }
+    return DEFAULT_VIDEO_THUMB;
+}
+
 function handleThumbnailError(img) {
     const orig = img.dataset.origSrc || img.src;
     if (orig && !img.dataset.proxied && !orig.startsWith('data:') && !orig.includes('/api/thumbnail-proxy')) {
         img.dataset.proxied = 'true';
         img.src = '/api/thumbnail-proxy?url=' + encodeURIComponent(orig);
     } else {
-        img.src = DEFAULT_VIDEO_THUMB;
+        img.src = getDefaultFileThumb(orig);
     }
 }
 
-function getSafeThumbnailUrl(url) {
-    if (!url) return DEFAULT_VIDEO_THUMB;
+function getSafeThumbnailUrl(url, title = '') {
+    if (!url) return getDefaultFileThumb(title);
+    if (url.startsWith('data:') || url.startsWith('/') || url.startsWith('http://127.0.0.1')) {
+        return url;
+    }
     return `/api/thumbnail-proxy?url=${encodeURIComponent(url)}`;
 }
 
@@ -336,7 +359,7 @@ async function startDownload(analysis, fmt) {
     const targetUrl = fmt.direct_url || analysis.source_url;
     const clean = (targetUrl || '').split('?')[0].toLowerCase();
     if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) {
-        showToast('⚠️ Cannot download image/SVG file as video.', 4000);
+        showToast('⚠️ Cannot download image/SVG file directly.', 4000);
         return;
     }
 
@@ -462,12 +485,13 @@ function renderDownloadsList(items) {
             speedText = ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s`;
         }
 
-        const thumbSrc = getSafeThumbnailUrl(item.thumbnail);
+        const thumbSrc = getSafeThumbnailUrl(item.thumbnail, item.title);
+        const isNonVideo = /\.(apk|xapk|zip|rar|7z|tar|gz|pdf|doc|docx|xls|xlsx|ppt|pptx|iso|dmg|exe)$/i.test(item.title || '');
 
         return `
             <div class="download-item" id="dl-card-${item.id}">
                 <div class="dl-header">
-                    <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || ''}" />
+                    <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || item.title || ''}" />
                     <div class="dl-info">
                         <div class="dl-title">${item.title}</div>
                         <div class="dl-meta" id="meta-info-${item.id}">${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}</div>
@@ -490,12 +514,15 @@ function renderDownloadsList(items) {
                     ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">▶ Resume</button>` : ''}
                     ${item.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryDownload('${item.url}')">🔄 Retry</button>` : ''}
                     ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">✕ Cancel</button>` : ''}
-                    ${isCompleted ? `
+                    ${isCompleted ? (isNonVideo ? `
+                        <button class="btn btn-primary btn-sm" onclick="openInPhonePlayer('${item.id}')">📂 Open File</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteDownload('${item.id}')">🗑 Delete</button>
+                    ` : `
                         <button class="btn btn-primary btn-sm" onclick="playVideo('${item.id}')">▶ Play</button>
                         <button class="btn btn-secondary btn-sm" onclick="openInPhonePlayer('${item.id}')" title="Open in phone gallery or video player">📱 Open</button>
                         <button class="btn btn-secondary btn-sm" onclick="hideInVault('${item.id}')">🔒 Hide in Vault</button>
                         <button class="btn btn-danger btn-sm" onclick="deleteDownload('${item.id}')">🗑 Delete</button>
-                    ` : ''}
+                    `) : ''}
                 </div>
             </div>
         `;
@@ -1046,7 +1073,7 @@ async function onFabClicked() {
         return;
     }
 
-    showToast('🔍 Checking clipboard for video link...');
+    showToast('🔍 Checking clipboard for download link...');
     await checkClipboardForVideo();
 
     if (detectedVideoUrl) {
@@ -1060,7 +1087,7 @@ async function onFabClicked() {
         return;
     }
 
-    showToast('📋 Copy a video link in any app, then tap ⚡ to download!');
+    showToast('📋 Copy a video or download link in any app, then tap ⚡ to download!');
 }
 
 async function quickAutoDownloadUrl(url) {
@@ -1171,17 +1198,17 @@ async function requestOverlayPermissionAndCloseModal() {
 async function onDirectDownloadClicked() {
     let url = document.getElementById('url-input').value.trim();
     if (!url) {
-        showToast('Checking clipboard for video link...', 2000);
+        showToast('Checking clipboard for download link...', 2000);
         await checkClipboardForVideo();
         url = detectedVideoUrl || document.getElementById('url-input').value.trim();
     }
     if (!url) {
-        showToast('Please paste or type a video URL first!', 3000);
+        showToast('Please paste or type a video or cloud/file URL first!', 3000);
         return;
     }
     const clean = url.split('?')[0].toLowerCase();
     if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) {
-        showToast('⚠️ Please enter a video link, not an image/SVG file.', 4000);
+        showToast('⚠️ Please enter a video or cloud/file link, not an image/SVG file.', 4000);
         return;
     }
     quickAutoDownloadUrl(url);

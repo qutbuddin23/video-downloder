@@ -60,9 +60,9 @@
                 </div>
 
                 <div class="card">
-                    <div class="card-title"><span>📥</span> Paste Video or Page URL</div>
+                    <div class="card-title"><span>📥</span> Paste Video, Cloud, or File URL</div>
                     <div class="url-input-container">
-                        <input type="text" id="url-input" class="url-input-box" placeholder="https://example.com/video or page..." />
+                        <input type="text" id="url-input" class="url-input-box" placeholder="Paste YouTube, MEGA, TeraBox, video, or file URL..." />
                         <div class="btn-row" style="display:flex; gap:8px;">
                             <button id="btn-paste" class="btn btn-secondary" style="flex:1;">📋 Paste</button>
                             <button id="btn-direct-download" class="btn btn-primary" onclick="onDirectDownloadClicked()" style="flex:1.4; font-weight:700;">⚡ Direct Download</button>
@@ -72,13 +72,14 @@
 
                     <div class="chips-container">
                         <span class="chip">YouTube</span>
+                        <span class="chip" style="border-color:#EF4444; color:#FCA5A5;">MEGA.nz</span>
+                        <span class="chip" style="border-color:#3B82F6; color:#93C5FD;">TeraBox</span>
                         <span class="chip">Instagram</span>
                         <span class="chip">TikTok</span>
                         <span class="chip">Twitter / X</span>
                         <span class="chip">Facebook</span>
                         <span class="chip">HLS .m3u8</span>
-                        <span class="chip">DASH .mpd</span>
-                        <span class="chip">Direct MP4</span>
+                        <span class="chip" style="border-color:#10B981; color:#6EE7B7;">Files (.zip, .apk)</span>
                     </div>
                 </div>
 

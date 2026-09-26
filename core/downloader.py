@@ -17,6 +17,9 @@ import requests
 from core.database import Database
 from core.storage_manager import format_bytes
 from core.paths import get_default_download_dir, is_directory_writable, get_base_data_dir
+from core.mega import is_mega_url, get_mega_file_info, download_mega_file, parse_mega_url
+from core.terabox import is_terabox_url, get_terabox_file_info
+from core.detector import DIRECT_DOWNLOAD_EXTS
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
@@ -265,9 +268,25 @@ class AndroidNotificationHelper:
 
 
 def open_video_in_external_player(file_path: str) -> bool:
-    """Launches the video file in the phone's native video player (VLC, MX Player, Gallery)."""
+    """Launches the downloaded file in the phone's native app (player, installer, viewer)."""
     if not file_path or not os.path.exists(file_path):
         return False
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".apk":
+        mime_type = "application/vnd.android.package-archive"
+    elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
+        mime_type = "application/zip"
+    elif ext == ".pdf":
+        mime_type = "application/pdf"
+    elif ext in [".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg"]:
+        mime_type = "audio/*"
+    elif ext in [".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".3gp"]:
+        mime_type = "video/*"
+    else:
+        import mimetypes
+        mime_type = mimetypes.guess_type(file_path)[0] or "*/*"
+
     try:
         from jnius import autoclass
         from android.runnable import run_on_ui_thread
@@ -294,16 +313,31 @@ def open_video_in_external_player(file_path: str) -> bool:
 
                     intent = Intent(Intent.ACTION_VIEW)
                     uri = Uri.fromFile(file_obj)
-                    intent.setDataAndType(uri, "video/*")
+                    intent.setDataAndType(uri, mime_type)
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     activity.startActivity(intent)
-                    print(f"[OpenPlayer] Launched external player for {file_path}")
+                    print(f"[OpenPlayer] Launched external app ({mime_type}) for {file_path}")
             except Exception as ex:
                 print(f"[OpenPlayer] Launch exception: {ex}")
         _open()
         return True
     except Exception as e:
+        # Desktop / Windows fallback testing
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)
+                return True
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", file_path])
+                return True
+            elif sys.platform.startswith("linux") and not os.path.exists("/system/build.prop"):
+                import subprocess
+                subprocess.Popen(["xdg-open", file_path])
+                return True
+        except Exception:
+            pass
         print(f"[OpenPlayer] Error: {e}")
         return False
 
@@ -351,11 +385,6 @@ class DownloadTask:
             if self.is_paused or self.is_cancelled:
                 return
 
-            # Strict guard: Reject image or SVG URLs immediately
-            target_to_check = (self.direct_url or self.url).split("?")[0].lower()
-            if any(target_to_check.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]):
-                raise ValueError(f"Target URL is an image/asset ({target_to_check.split('.')[-1]}), not a valid video.")
-
             # Ensure output directory is actually writable before starting write operations
             if not is_directory_writable(self.output_dir):
                 print(f"[Downloader] self.output_dir '{self.output_dir}' is NOT writable! Migrating...")
@@ -370,29 +399,40 @@ class DownloadTask:
                 downloaded_bytes=0, total_bytes=0, speed=0.0
             )
 
+            # Strategy 1: Native MEGA.nz cloud download with AES-CTR decryption
+            if is_mega_url(self.url):
+                self._download_mega()
+                return
 
-            # If target URL or direct URL has direct media extension, prioritize direct HTTP chunked download
-            clean_url = (self.url or "").split("?")[0].lower()
-            if not self.direct_url and any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
-                self.direct_url = self.url
+            # Strategy 2: TeraBox cloud share link resolution
+            if is_terabox_url(self.url):
+                if not self.direct_url:
+                    tb_info = get_terabox_file_info(self.url)
+                    if tb_info.get("success"):
+                        self.direct_url = tb_info.get("direct_url")
+                        if tb_info.get("title"):
+                            self.title = tb_info.get("title")
+                self._download_direct_http(custom_referer="https://www.terabox.com/")
+                return
 
-            download_succeeded = False
+            # Strategy 3: Direct media, archive, installer, or document download
             clean_direct = (self.direct_url or "").split("?")[0].lower()
-            if self.direct_url and any(clean_direct.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
+            clean_url = (self.url or "").split("?")[0].lower()
+            is_direct = any(clean_direct.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS) or any(clean_url.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS)
+            
+            if self.direct_url or is_direct:
                 try:
                     self._download_direct_http()
-                    download_succeeded = True
+                    return
                 except Exception as direct_err:
                     print(f"[Downloader] Direct HTTP download notice ({direct_err}), checking fallback...")
                     if self.is_cancelled or self.is_paused:
                         return
-                    # If target is already a direct CDN file, yt-dlp generic extractor will fail with HTTP 470
-                    if any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
+                    if any(clean_url.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS):
                         raise direct_err
 
-            # Strategy 2: Resilient yt-dlp download with progress hook
-            if not download_succeeded:
-                self._download_via_ytdlp()
+            # Strategy 4: Resilient yt-dlp download with progress hook
+            self._download_via_ytdlp()
 
         except Exception as e:
             try:
@@ -414,26 +454,88 @@ class DownloadTask:
             except Exception:
                 pass
 
-    def _download_direct_http(self):
+    def _download_mega(self):
+        """Executes native streaming download and AES-CTR decryption for MEGA.nz files."""
+        info = get_mega_file_info(self.url)
+        if not info.get("success"):
+            raise ValueError(info.get("error_message", "Failed to resolve MEGA link."))
+
+        filename = info.get("filename") or f"{sanitize_filename(self.title)}.bin"
+        direct_url = info.get("direct_url")
+        fmt = info.get("formats", [{}])[0]
+        key_bytes = fmt.get("mega_key_bytes")
+        initial_counter = fmt.get("mega_initial_counter")
+
+        clean_fn = sanitize_filename(filename)
+        final_path = os.path.join(self.output_dir, clean_fn)
+
+        def _mega_progress(downloaded, total):
+            pct = (downloaded / total * 100.0) if total > 0 else 0.0
+            now = time.time()
+            elapsed = now - self.last_time
+            if elapsed >= 0.5 or pct >= 100.0:
+                speed = (downloaded - self.last_bytes) / elapsed if elapsed > 0 else 0.0
+                self.last_time = now
+                self.last_bytes = downloaded
+                self.current_speed = speed
+                speed_str = f"{(speed / (1024*1024)):.2f} MB/s" if speed > 0 else "0 MB/s"
+                AndroidNotificationHelper.update_progress(self.notification_id, self.title, pct, speed_str)
+                self.db.update_download_progress(
+                    self.task_id, status="downloading", progress=pct,
+                    downloaded_bytes=downloaded, total_bytes=total, speed=speed
+                )
+
+        success = download_mega_file(
+            task=self,
+            direct_url=direct_url,
+            key_bytes=key_bytes,
+            initial_counter=initial_counter,
+            output_path=final_path,
+            progress_callback=_mega_progress
+        )
+        if success:
+            final_size = os.path.getsize(final_path)
+            self.db.update_download_progress(
+                self.task_id, status="completed", progress=100.0,
+                downloaded_bytes=final_size, total_bytes=final_size, speed=0.0
+            )
+            self.db.update_download_filepath(self.task_id, final_path, final_size)
+            AndroidNotificationHelper.show_complete(self.notification_id, self.title)
+            scan_media_file(final_path)
+
+    def _download_direct_http(self, custom_referer: str = ""):
         target_url = self.direct_url or self.url
         if not target_url:
             raise ValueError("No download URL provided.")
 
+        clean_target = (target_url or "").split("?")[0].lower()
+        ext = "mp4"
+        for candidate in DIRECT_DOWNLOAD_EXTS:
+            if clean_target.endswith(candidate):
+                ext = candidate.lstrip('.')
+                break
+
         clean_title = sanitize_filename(self.title)
-        part_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.part")
-        final_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.mp4")
+        if "." in clean_title and len(clean_title.rsplit(".", 1)[1]) in (2, 3, 4, 5):
+            final_filename = clean_title
+        else:
+            final_filename = f"{clean_title}_{self.task_id[:6]}.{ext}"
+
+        part_path = os.path.join(self.output_dir, f"{final_filename}.part")
+        final_path = os.path.join(self.output_dir, final_filename)
 
         # Determine appropriate referer
-        referer = ""
-        clean_url = (self.url or "").split("?")[0].lower()
-        if self.url and not any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
-            referer = self.url
-        elif target_url:
-            try:
-                parts = urllib.parse.urlsplit(target_url)
-                referer = f"{parts.scheme}://{parts.netloc}/"
-            except Exception:
-                pass
+        referer = custom_referer
+        if not referer:
+            clean_url = (self.url or "").split("?")[0].lower()
+            if self.url and not any(clean_url.endswith(e) for e in DIRECT_DOWNLOAD_EXTS):
+                referer = self.url
+            elif target_url:
+                try:
+                    parts = urllib.parse.urlsplit(target_url)
+                    referer = f"{parts.scheme}://{parts.netloc}/"
+                except Exception:
+                    pass
 
         user_agents = [
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",

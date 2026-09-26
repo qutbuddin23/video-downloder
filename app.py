@@ -55,22 +55,21 @@ def trigger_auto_download(url: str):
     global latest_auto_download_title, latest_auto_download_id
     try:
         url = url.strip()
-        # Strictly reject non-media or image links
+        # Strictly reject image files from auto-download
         clean_check = url.split("?")[0].lower()
         if any(clean_check.endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]):
-            print(f"[Auto-Download] Ignored non-video link: {url}")
+            print(f"[Auto-Download] Ignored image link: {url}")
             return False, "", ""
 
         result = detector.analyze_url(url)
         if result.get("success"):
-            title = result.get("title", "Universal Video")
+            title = result.get("title", "Universal Download")
             formats = result.get("formats", [])
-            # Prioritize format containing both audio and video
             selected_fmt = next((f for f in formats if f.get("has_audio") and f.get("has_video")), None)
             if not selected_fmt and formats:
                 selected_fmt = formats[0]
 
-            format_sel = selected_fmt.get("download_selector") if selected_fmt else "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
+            format_sel = selected_fmt.get("download_selector") if selected_fmt else "direct"
             quality_lbl = selected_fmt.get("quality_label", "Auto/Best") if selected_fmt else "Auto/Best"
             direct_u = selected_fmt.get("direct_url") if selected_fmt else result.get("direct_url")
 
@@ -640,7 +639,17 @@ def on_floating_bubble_click(detected_url: str):
     print(f"[Floating Button Clicked] Detected URL: {detected_url}")
     if detected_url:
         latest_sniffed_url = detected_url
-        threading.Thread(target=trigger_auto_download, args=(detected_url,), daemon=True).start()
+        def _bg_trigger():
+            success, title, dl_id = trigger_auto_download(detected_url)
+            try:
+                from core.overlay import show_android_toast
+                if success:
+                    show_android_toast(f"🚀 Downloading: {title[:28]}...")
+                else:
+                    show_android_toast("⚠️ No downloadable stream found for copied link.")
+            except Exception:
+                pass
+        threading.Thread(target=_bg_trigger, daemon=True).start()
 
 
 def start_overlay():

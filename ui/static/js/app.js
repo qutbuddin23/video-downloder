@@ -371,7 +371,7 @@ async function startDownload(analysis, fmt) {
                 url: analysis.source_url,
                 title: analysis.title,
                 quality_label: fmt.quality_label,
-                format_selector: fmt.download_selector,
+                format_selector: fmt.download_selector || 'best',
                 direct_url: fmt.direct_url,
                 thumbnail: analysis.thumbnail && !analysis.thumbnail.startsWith('data:') ? analysis.thumbnail : '',
                 duration: analysis.duration
@@ -514,7 +514,7 @@ function renderDownloadsList(items) {
                     ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">▶ Resume</button>` : ''}
                     ${item.status === 'failed' ? `
                         <button class="btn btn-primary btn-sm" onclick="openUrlInBrowser('${encodeURIComponent(item.url)}')">🌐 Open in Browser</button>
-                        <button class="btn btn-secondary btn-sm" onclick="retryDownload('${item.url}')">🔄 Retry</button>
+                        <button class="btn btn-secondary btn-sm" onclick="retryDownload('${item.id}', '${encodeURIComponent(item.url)}')">🔄 Retry</button>
                     ` : ''}
                     ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">✕ Cancel</button>` : ''}
                     ${isCompleted ? (isNonVideo ? `
@@ -1192,10 +1192,20 @@ async function onDirectDownloadClicked() {
     quickAutoDownloadUrl(url);
 }
 
-function retryDownload(url) {
-    if (url) {
-        showToast('🔄 Retrying download...', 3000);
-        quickAutoDownloadUrl(url);
+async function retryDownload(id, encodedUrl) {
+    showToast('🔄 Retrying download...', 3000);
+    if (id) {
+        try {
+            const res = await fetch(`/api/downloads/${id}/resume`, { method: 'POST' });
+            if (res.ok) {
+                loadDownloads();
+                return;
+            }
+        } catch (_) {}
+    }
+    const rawUrl = decodeURIComponent(encodedUrl || '');
+    if (rawUrl) {
+        quickAutoDownloadUrl(rawUrl);
     }
 }
 

@@ -222,4 +222,43 @@ def test_direct_http_470_triggers_ytdlp_webpage_fallback(temp_db):
             mock_ytdlp.assert_called_once_with(override_url="https://spankbang.com/8xxxx/video/test")
 
 
+def test_human_format_label_sanitized(temp_db):
+    from core.downloader import DownloadTask
+
+    db, temp_dir = temp_db
+    # Test human label with parens like "Stream 1 (MP4)"
+    task = DownloadTask(
+        task_id="label_test_123",
+        url="https://example.com/watch",
+        title="Label Test",
+        format_selector="Stream 1 (MP4)",
+        direct_url=None,
+        output_dir=temp_dir,
+        db=db
+    )
+
+    # Must be sanitized to "best" on init
+    assert task.format_selector == "best"
+
+    # Even if format_selector is manually corrupted with parens, _download_via_ytdlp must build a valid format_sel
+    task.format_selector = "Stream 1 (MP4)"
+    with patch("yt_dlp.YoutubeDL") as mock_ydl:
+        mock_instance = MagicMock()
+        mock_instance.extract_info.return_value = {"_filename": os.path.join(temp_dir, "test.mp4")}
+        mock_ydl.return_value.__enter__.return_value = mock_instance
+
+        # Create dummy file to simulate success
+        with open(os.path.join(temp_dir, "test.mp4"), "wb") as f:
+            f.write(b"\x00\x00\x00\x1cftypisom" + b"A" * 1500)
+
+        task._download_via_ytdlp()
+
+        # Check ydl_opts passed to YoutubeDL
+        called_opts = mock_ydl.call_args[0][0]
+        # Must not contain unexpected "(" or spaces
+        assert "(" not in called_opts["format"].split("/")[0]
+        assert "Stream 1" not in called_opts["format"]
+
+
+
 

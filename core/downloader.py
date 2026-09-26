@@ -405,7 +405,11 @@ class DownloadTask:
         self.notification_id = abs(hash(task_id)) % 100000 + 1
         self.url = url
         self.title = title
-        self.format_selector = format_selector
+        raw_fmt = (format_selector or "best").strip()
+        if " " in raw_fmt or "(" in raw_fmt or ")" in raw_fmt or any(w in raw_fmt.lower() for w in ["stream", "direct", "auto", "unknown"]):
+            self.format_selector = "best"
+        else:
+            self.format_selector = raw_fmt
         self.direct_url = direct_url
         self.output_dir = output_dir
         self.db = db
@@ -854,13 +858,20 @@ class DownloadTask:
                     )
 
         # Build resilient format selector that guarantees video+audio without selecting storyboards/images
-        format_sel = self.format_selector or "b"
-        if "sb" in format_sel or format_sel == "best":
+        raw_sel = (self.format_selector or "").strip()
+        is_invalid_for_ytdlp = (
+            not raw_sel or
+            " " in raw_sel or
+            "(" in raw_sel or
+            ")" in raw_sel or
+            any(w in raw_sel.lower() for w in ["stream", "direct", "auto", "unknown"])
+        )
+        if is_invalid_for_ytdlp or "sb" in raw_sel or raw_sel in ("best", "b", "18"):
             format_sel = "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/bestvideo[format_id!^=sb]+bestaudio/best[format_id!^=sb]/best"
-        elif "+" in format_sel:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
+        elif "+" in raw_sel:
+            format_sel = f"{raw_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
         else:
-            format_sel = f"{format_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
+            format_sel = f"{raw_sel}/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]/best"
 
         http_hdrs = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
@@ -1011,6 +1022,7 @@ class DownloadManager:
                         thumbnail: str = "", duration: int = 0,
                         auto_start: bool = True) -> str:
         download_id = str(uuid.uuid4())
+        safe_format = format_selector if format_selector and "(" not in format_selector and " " not in format_selector else "best"
         item = {
             "id": download_id,
             "url": url,
@@ -1018,7 +1030,7 @@ class DownloadManager:
             "thumbnail": thumbnail,
             "duration": duration,
             "quality": quality_label,
-            "format": "mp4",
+            "format": safe_format,
             "status": "queued",
             "progress": 0.0,
             "downloaded_bytes": 0,
@@ -1031,7 +1043,7 @@ class DownloadManager:
             task_id=download_id,
             url=url,
             title=title,
-            format_selector=format_selector,
+            format_selector=safe_format,
             direct_url=direct_url,
             output_dir=self.download_folder,
             db=self.db
@@ -1053,11 +1065,17 @@ class DownloadManager:
         record = self.db.get_download(download_id)
         if not record:
             return
+        raw_fmt = (record.get("format") or "best").strip()
+        if not raw_fmt or " " in raw_fmt or "(" in raw_fmt or ")" in raw_fmt or any(w in raw_fmt.lower() for w in ["stream", "direct", "auto", "unknown"]):
+            format_sel = "best"
+        else:
+            format_sel = raw_fmt
+
         task = DownloadTask(
             task_id=download_id,
             url=record["url"],
             title=record["title"],
-            format_selector=record.get("quality", "best"),
+            format_selector=format_sel,
             direct_url=None,
             output_dir=self.download_folder,
             db=self.db

@@ -4,6 +4,7 @@ Extracts video metadata and streams using yt-dlp and deep webpage sniffing
 (HTML5, HLS .m3u8 playlists, MPEG-DASH .mpd manifests, and direct video links).
 """
 
+import os
 import re
 import urllib.parse
 import warnings
@@ -14,6 +15,13 @@ from core.paths import SafeYtdlLogger
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
+
+
+def is_direct_media_url(url: str) -> bool:
+    """Checks whether URL directly references a raw media file/stream without HTML webpage wrapping."""
+    clean = url.split("?")[0].lower()
+    return any(clean.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".m3u8", ".mpd", ".m4v", ".ts"])
+
 
 
 
@@ -82,6 +90,47 @@ class MediaDetector:
         url = url.strip()
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "https://" + url
+
+        # Fast path: If the URL is already a direct media stream, bypass generic webpage scraping
+        if is_direct_media_url(url):
+            clean = url.split("?")[0].lower()
+            ext = "mp4"
+            for candidate in ["mp4", "webm", "mkv", "mov", "m3u8", "mpd", "m4v"]:
+                if clean.endswith(f".{candidate}"):
+                    ext = candidate
+                    break
+            path_part = urllib.parse.urlsplit(url).path
+            fname = os.path.basename(path_part)
+            raw_title = os.path.splitext(fname)[0] or "Direct Video Stream"
+            title = re.sub(r'[_.-]+', ' ', raw_title).strip() or "Direct Video Stream"
+            fmt = {
+                "format_id": "direct_stream",
+                "quality_label": f"Direct HD ({ext.upper()})",
+                "resolution": "HD Stream",
+                "height": 720,
+                "ext": "mp4" if ext in ["m3u8", "mpd"] else ext,
+                "codec": "h264/aac",
+                "filesize": 0,
+                "filesize_str": "Direct Stream",
+                "has_audio": True,
+                "has_video": True,
+                "direct_url": url,
+                "download_selector": "direct",
+                "referer": url
+            }
+            return {
+                "success": True,
+                "is_direct": True,
+                "title": title,
+                "thumbnail": "",
+                "duration": 0,
+                "duration_str": "Stream",
+                "source_url": url,
+                "direct_url": url,
+                "is_protected": False,
+                "formats": [fmt],
+                "detected_count": 1
+            }
 
         # First attempt: yt-dlp extraction
         try:
@@ -333,7 +382,8 @@ class MediaDetector:
                 "has_audio": True,
                 "has_video": True,
                 "direct_url": media_url,
-                "download_selector": "best[format_id!^=sb]"
+                "download_selector": "best[format_id!^=sb]",
+                "referer": url
             })
 
         best_direct = formats[0]["direct_url"] if formats else ""

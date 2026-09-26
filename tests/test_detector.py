@@ -131,3 +131,15 @@ def test_generic_site_formats_without_vcodec_recognized():
     # 480p must be first
     assert processed["formats"][0]["resolution"] == "480p"
     assert "video_480p.mp4" in processed["direct_url"]
+
+
+def test_direct_media_url_fast_path():
+    detector = MediaDetector()
+    direct_mp4 = "https://cdn.example.com/videos/sample_360p.mp4?validfrom=123&expire=456"
+    res = detector.analyze_url(direct_mp4)
+    assert res["success"] is True
+    assert res.get("is_direct") is True
+    assert len(res["formats"]) == 1
+    assert res["formats"][0]["direct_url"] == direct_mp4
+    assert res["formats"][0]["ext"] == "mp4"
+

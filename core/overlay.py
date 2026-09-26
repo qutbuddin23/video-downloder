@@ -510,6 +510,7 @@ class AndroidFloatingOverlay:
 
                     wm.addView(btn, params)
                     self.floating_view = btn
+                    self.params = params
                     self.is_active = True
                     print("[Overlay] Android Floating Button successfully mounted!")
                     show_android_toast("⚡ Floating Bubble Active! Drag it anywhere on screen.")
@@ -534,39 +535,48 @@ class AndroidFloatingOverlay:
         threading.Thread(target=self._handle_bubble_click_async, daemon=True).start()
 
     def _handle_bubble_click_async(self):
-        # 1. Bring activity to front so app acquires input focus for Android 10+ clipboard access
+        # 1. Non-intrusively read clipboard without opening or bringing the app to the front
+        clip_text = ""
         try:
-            from jnius import autoclass
             from android.runnable import run_on_ui_thread
+            if self.floating_view and self.window_manager and hasattr(self, 'params') and self.params:
+                @run_on_ui_thread
+                def _request_window_focus():
+                    try:
+                        # Temporarily remove FLAG_NOT_FOCUSABLE (8) so overlay window acquires focus for clipboard
+                        self.params.flags = 256  # FLAG_LAYOUT_IN_SCREEN
+                        self.window_manager.updateViewLayout(self.floating_view, self.params)
+                        self.floating_view.requestFocus()
+                    except Exception:
+                        pass
+                _request_window_focus()
+                time.sleep(0.06)
 
-            @run_on_ui_thread
-            def _bring_forward():
-                try:
-                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                    activity = PythonActivity.mActivity
-                    if activity:
-                        Intent = autoclass("android.content.Intent")
-                        intent = Intent(activity, activity.getClass())
-                        intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        activity.startActivity(intent)
-                except Exception as fe:
-                    print(f"[Overlay] Focus notice: {fe}")
-            _bring_forward()
-        except Exception:
-            pass
+            clip_text = get_android_clipboard_text()
 
-        # Give Android 300ms to bring activity to front and grant clipboard access
-        time.sleep(0.35)
+            if self.floating_view and self.window_manager and hasattr(self, 'params') and self.params:
+                @run_on_ui_thread
+                def _restore_window_flags():
+                    try:
+                        # Restore FLAG_NOT_FOCUSABLE (8) | FLAG_LAYOUT_IN_SCREEN (256)
+                        self.params.flags = 8 | 256
+                        self.window_manager.updateViewLayout(self.floating_view, self.params)
+                    except Exception:
+                        pass
+                _restore_window_flags()
+        except Exception as ce:
+            print(f"[Overlay] Window focus toggle notice: {ce}")
+            clip_text = get_android_clipboard_text()
 
-        # 2. Read clipboard (check both freshly read text and last_clipboard)
-        clip_text = get_android_clipboard_text()
+        # 2. Extract media URL from clipboard
         video_url = detect_video_url(clip_text) or detect_video_url(getattr(self, "last_clipboard", ""))
         if video_url:
-            show_android_toast("⚡ Video Detected! Starting Auto-Download...")
+            show_android_toast("⚡ Video Detected! Downloading in background...")
             if self.on_trigger_callback:
                 self.on_trigger_callback(video_url)
         else:
             show_android_toast("Universal Downloader: Copy a video link first, then tap ⚡")
+
 
     def _clipboard_monitor_loop(self):
         while self.is_active:

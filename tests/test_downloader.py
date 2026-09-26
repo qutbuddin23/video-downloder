@@ -8,7 +8,7 @@ import tempfile
 from unittest.mock import patch, MagicMock
 import pytest
 from core.database import Database
-from core.downloader import sanitize_filename, DownloadManager
+from core.downloader import sanitize_filename, DownloadManager, DownloadTask
 
 
 @pytest.fixture
@@ -59,17 +59,15 @@ def test_download_task_record(temp_db):
     assert paused_rec["status"] == "paused"
 
     # Test resume
-    dm.resume_download(dl_id)
-    assert dl_id in dm.tasks
+    with patch.object(DownloadTask, "start"):
+        dm.resume_download(dl_id)
+        assert dl_id in dm.tasks
 
-    # Test cancel
-    dm.cancel_download(dl_id)
-    cancelled_rec = db.get_download(dl_id)
-    assert cancelled_rec["status"] == "cancelled"
+        # Test cancel
+        dm.cancel_download(dl_id)
+        cancelled_rec = db.get_download(dl_id)
+        assert cancelled_rec["status"] == "cancelled"
 
-    # Ensure background thread is terminated before fixture teardown
-    if dl_id in dm.tasks and dm.tasks[dl_id].thread:
-        dm.tasks[dl_id].thread.join(timeout=1.0)
 
 
 def test_android_notification_helper_graceful():
@@ -148,5 +146,30 @@ def test_writable_directory_and_auto_migration(tmp_path):
         with patch.object(task, "_download_via_ytdlp"):
             task._run()
             assert task.output_dir != "Z:\\NonExistent\\Unwritable\\Path"
+
+
+def test_download_direct_http_status_validation(temp_db):
+    from core.downloader import DownloadTask
+
+    db, temp_dir = temp_db
+    task = DownloadTask(
+        task_id="status_err_123",
+        url="https://example.com/watch",
+        title="Status Error Test",
+        format_selector="b",
+        direct_url="https://cdn.example.com/video.mp4",
+        output_dir=temp_dir,
+        db=db
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 470
+    mock_resp.reason = "Client Error"
+    mock_resp.headers = {"content-type": "text/html"}
+
+    with patch("requests.Session.get", return_value=mock_resp):
+        with pytest.raises(ValueError, match="HTTP Server returned status 470"):
+            task._download_direct_http()
+
 
 

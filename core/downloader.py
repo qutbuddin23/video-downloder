@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 import threading
+import urllib.parse
 import warnings
 from typing import Dict, Any, Optional
 import requests
@@ -370,7 +371,11 @@ class DownloadTask:
             )
 
 
-            # Strategy 1: Attempt direct HTTP chunked download if direct_url has direct media extension
+            # If target URL or direct URL has direct media extension, prioritize direct HTTP chunked download
+            clean_url = (self.url or "").split("?")[0].lower()
+            if not self.direct_url and any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
+                self.direct_url = self.url
+
             download_succeeded = False
             clean_direct = (self.direct_url or "").split("?")[0].lower()
             if self.direct_url and any(clean_direct.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
@@ -378,9 +383,12 @@ class DownloadTask:
                     self._download_direct_http()
                     download_succeeded = True
                 except Exception as direct_err:
-                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), falling back to yt-dlp...")
+                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), checking fallback...")
                     if self.is_cancelled or self.is_paused:
                         return
+                    # If target is already a direct CDN file, yt-dlp generic extractor will fail with HTTP 470
+                    if any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
+                        raise direct_err
 
             # Strategy 2: Resilient yt-dlp download with progress hook
             if not download_succeeded:
@@ -407,35 +415,94 @@ class DownloadTask:
                 pass
 
     def _download_direct_http(self):
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Encoding": "identity",
-            "Connection": "keep-alive"
-        }
-        if self.url:
-            headers["Referer"] = self.url
-            try:
-                parts = urllib.parse.urlsplit(self.url)
-                headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
-            except Exception:
-                pass
+        target_url = self.direct_url or self.url
+        if not target_url:
+            raise ValueError("No download URL provided.")
+
         clean_title = sanitize_filename(self.title)
         part_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.part")
         final_path = os.path.join(self.output_dir, f"{clean_title}_{self.task_id[:6]}.mp4")
 
-        downloaded = 0
-        if os.path.exists(part_path):
-            downloaded = os.path.getsize(part_path)
-            headers["Range"] = f"bytes={downloaded}-"
+        # Determine appropriate referer
+        referer = ""
+        clean_url = (self.url or "").split("?")[0].lower()
+        if self.url and not any(clean_url.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v"]):
+            referer = self.url
+        elif target_url:
+            try:
+                parts = urllib.parse.urlsplit(target_url)
+                referer = f"{parts.scheme}://{parts.netloc}/"
+            except Exception:
+                pass
+
+        user_agents = [
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ]
 
         session = requests.Session()
-        resp = session.get(self.direct_url, headers=headers, stream=True, timeout=25)
-        
-        # Verify content type is not an image or SVG
+        resp = None
+        for ua in user_agents:
+            headers = {
+                "User-Agent": ua,
+                "Accept": "*/*",
+                "Accept-Encoding": "identity",
+                "Connection": "keep-alive"
+            }
+            if referer:
+                headers["Referer"] = referer
+                try:
+                    parts = urllib.parse.urlsplit(referer)
+                    headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
+                except Exception:
+                    pass
+
+            downloaded = 0
+            if os.path.exists(part_path):
+                downloaded = os.path.getsize(part_path)
+                headers["Range"] = f"bytes={downloaded}-"
+
+            try:
+                r = session.get(target_url, headers=headers, stream=True, timeout=25)
+                if r.status_code in (200, 206):
+                    c_type = r.headers.get("content-type", "").lower()
+                    if not ("image/" in c_type or "svg" in c_type or "text/html" in c_type):
+                        resp = r
+                        break
+                elif r.status_code in (403, 470, 401):
+                    continue
+            except Exception:
+                continue
+
+        if not resp:
+            headers = {
+                "User-Agent": user_agents[0],
+                "Accept": "*/*",
+                "Accept-Encoding": "identity",
+            }
+            if referer:
+                headers["Referer"] = referer
+            resp = session.get(target_url, headers=headers, stream=True, timeout=25)
+
+        # Strictly validate response status code
+        if resp.status_code not in (200, 206):
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
+            raise ValueError(f"HTTP Server returned status {resp.status_code}: {resp.reason}")
+
+        # Strictly validate content type
         c_type = resp.headers.get("content-type", "").lower()
         if "image/" in c_type or "svg" in c_type or "text/html" in c_type:
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
             raise ValueError(f"Server returned non-video content type ({c_type}).")
+
 
         total_size = downloaded
         if "content-length" in resp.headers:
@@ -594,7 +661,13 @@ class DownloadTask:
             try:
                 info = ydl.extract_info(self.url, download=True)
             except Exception as primary_err:
-                if self.direct_url and self.direct_url != self.url:
+                clean_target = (self.direct_url or "").split("?")[0].lower()
+                is_direct = any(clean_target.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v", ".m3u8", ".mpd"])
+                if self.direct_url and self.direct_url != self.url and is_direct:
+                    print(f"[Downloader] Primary URL error ({primary_err}), executing direct stream HTTP download...")
+                    self._download_direct_http()
+                    return
+                elif self.direct_url and self.direct_url != self.url:
                     print(f"[Downloader] Primary URL error ({primary_err}), trying direct stream URL with yt-dlp...")
                     info = ydl.extract_info(self.direct_url, download=True)
                 else:

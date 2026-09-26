@@ -19,7 +19,7 @@ from core.storage_manager import format_bytes
 from core.paths import get_default_download_dir, is_directory_writable, get_base_data_dir
 from core.mega import is_mega_url, get_mega_file_info, download_mega_file, parse_mega_url
 from core.terabox import is_terabox_url, get_terabox_file_info
-from core.detector import DIRECT_DOWNLOAD_EXTS
+from core.detector import DIRECT_DOWNLOAD_EXTS, is_direct_download_url
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
@@ -130,6 +130,24 @@ class AndroidNotificationHelper:
     _channel_created = False
 
     @classmethod
+    def _get_context(cls):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            if PythonActivity.mActivity:
+                return PythonActivity.mActivity.getApplicationContext() or PythonActivity.mActivity
+        except Exception:
+            pass
+        try:
+            from jnius import autoclass
+            PythonService = autoclass("org.kivy.android.PythonService")
+            if PythonService.mService:
+                return PythonService.mService.getApplicationContext() or PythonService.mService
+        except Exception:
+            pass
+        return None
+
+    @classmethod
     def _init_channel(cls, context):
         if cls._channel_created or not context:
             return
@@ -158,11 +176,9 @@ class AndroidNotificationHelper:
     def update_progress(cls, notification_id: int, title: str, progress: float, speed_str: str = ""):
         try:
             from jnius import autoclass, cast
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if not activity:
+            context = cls._get_context()
+            if not context:
                 return
-            context = activity.getApplicationContext()
             cls._init_channel(context)
 
             NotificationManager = autoclass("android.app.NotificationManager")
@@ -209,11 +225,9 @@ class AndroidNotificationHelper:
     def show_complete(cls, notification_id: int, title: str):
         try:
             from jnius import autoclass, cast
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if not activity:
+            context = cls._get_context()
+            if not context:
                 return
-            context = activity.getApplicationContext()
             cls._init_channel(context)
 
             NotificationManager = autoclass("android.app.NotificationManager")
@@ -251,14 +265,56 @@ class AndroidNotificationHelper:
             print(f"[Notifications] show_complete notice: {e}")
 
     @classmethod
+    def show_error(cls, notification_id: int, title: str, error_msg: str = ""):
+        try:
+            from jnius import autoclass, cast
+            context = cls._get_context()
+            if not context:
+                return
+            cls._init_channel(context)
+
+            NotificationManager = autoclass("android.app.NotificationManager")
+            Notification = autoclass("android.app.Notification")
+            Context = autoclass("android.content.Context")
+            String = autoclass("java.lang.String")
+            nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+
+            if get_android_sdk_level() >= 26:
+                builder = Notification.Builder(context, String(cls.CHANNEL_ID))
+            else:
+                builder = Notification.Builder(context)
+
+            err_text = error_msg if error_msg else "Download failed"
+            builder.setContentTitle(cast("java.lang.CharSequence", String("❌ Download Failed")))
+            builder.setContentText(cast("java.lang.CharSequence", String(f"{title[:30]}: {err_text[:40]}")))
+
+            icon_id = 0
+            try:
+                icon_id = context.getApplicationInfo().icon
+            except Exception:
+                pass
+            if not icon_id:
+                try:
+                    android_R = autoclass("android.R$drawable")
+                    icon_id = getattr(android_R, "stat_notify_error", 17301624)
+                except Exception:
+                    icon_id = 17301624
+            builder.setSmallIcon(int(icon_id))
+            builder.setProgress(0, 0, False)
+            builder.setOngoing(False)
+            builder.setAutoCancel(True)
+
+            nm.notify(int(notification_id), builder.build())
+        except Exception as e:
+            print(f"[Notifications] show_error notice: {e}")
+
+    @classmethod
     def cancel(cls, notification_id: int):
         try:
             from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if not activity:
+            context = cls._get_context()
+            if not context:
                 return
-            context = activity.getApplicationContext()
             NotificationManager = autoclass("android.app.NotificationManager")
             Context = autoclass("android.content.Context")
             nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
@@ -356,6 +412,7 @@ class DownloadTask:
 
         self.is_paused = False
         self.is_cancelled = False
+        self._direct_http_tried = False
         self.thread: Optional[threading.Thread] = None
 
         # Speed calculation trackers
@@ -400,12 +457,12 @@ class DownloadTask:
             )
 
             # Strategy 1: Native MEGA.nz cloud download with AES-CTR decryption
-            if is_mega_url(self.url):
+            if is_mega_url(self.url) or self.format_selector == "mega":
                 self._download_mega()
                 return
 
             # Strategy 2: TeraBox cloud share link resolution
-            if is_terabox_url(self.url):
+            if is_terabox_url(self.url) or self.format_selector in ("terabox_direct", "terabox_gw"):
                 if not self.direct_url:
                     tb_info = get_terabox_file_info(self.url)
                     if tb_info.get("success"):
@@ -415,29 +472,40 @@ class DownloadTask:
                 self._download_direct_http(custom_referer="https://www.terabox.com/")
                 return
 
-            # Strategy 3: Direct media, archive, installer, or document download
+            # Strategy 3: HLS / DASH stream manifests (.m3u8, .mpd) -> must use streaming engine
             clean_direct = (self.direct_url or "").split("?")[0].lower()
             clean_url = (self.url or "").split("?")[0].lower()
-            is_direct = any(clean_direct.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS) or any(clean_url.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS)
-            
-            if self.direct_url or is_direct:
+            is_hls = clean_direct.endswith(".m3u8") or clean_direct.endswith(".mpd") or clean_url.endswith(".m3u8") or clean_url.endswith(".mpd")
+            if is_hls:
+                self._download_via_ytdlp(override_url=self.direct_url or self.url)
+                return
+
+            # Strategy 4: Direct file download (.mp4, .zip, .apk, etc.) OR explicitly selected/detected direct stream
+            is_direct_input = is_direct_download_url(self.url)
+            is_direct_stream = any(clean_direct.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS)
+            if self.format_selector == "direct" or is_direct_input or is_direct_stream:
                 try:
+                    self._direct_http_tried = True
                     self._download_direct_http()
                     return
                 except Exception as direct_err:
-                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), checking fallback...")
+                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), falling back to streaming engine...")
                     if self.is_cancelled or self.is_paused:
                         return
-                    if any(clean_url.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS):
+                    # Fallback to yt-dlp on direct_url or url
+                    try:
+                        self._download_via_ytdlp(override_url=self.direct_url or self.url)
+                        return
+                    except Exception:
                         raise direct_err
 
-            # Strategy 4: Resilient yt-dlp download with progress hook
-            self._download_via_ytdlp()
+            # Strategy 5: Resilient yt-dlp download for all platforms (YouTube, Twitter, TikTok, Tube sites, etc.)
+            self._download_via_ytdlp(override_url=self.url)
 
         except Exception as e:
             try:
-                AndroidNotificationHelper.cancel(self.notification_id)
                 if self.is_cancelled:
+                    AndroidNotificationHelper.cancel(self.notification_id)
                     self.db.update_download_progress(
                         self.task_id, status="cancelled", progress=0.0,
                         downloaded_bytes=0, total_bytes=0, speed=0.0,
@@ -446,6 +514,7 @@ class DownloadTask:
                 elif self.is_paused:
                     pass
                 else:
+                    AndroidNotificationHelper.show_error(self.notification_id, self.title, str(e))
                     self.db.update_download_progress(
                         self.task_id, status="failed", progress=0.0,
                         downloaded_bytes=0, total_bytes=0, speed=0.0,
@@ -543,13 +612,27 @@ class DownloadTask:
         ]
 
         session = requests.Session()
+        domain = urllib.parse.urlsplit(self.url or target_url).netloc
+        try:
+            from core.detector import MediaDetector
+            stored_cookies = MediaDetector._cookie_jar.get(domain, {})
+            if stored_cookies:
+                session.cookies.update(stored_cookies)
+            elif referer and referer.startswith("http"):
+                session.get(referer, headers={"User-Agent": user_agents[0]}, timeout=8, allow_redirects=True)
+        except Exception:
+            pass
+
         resp = None
         for ua in user_agents:
             headers = {
                 "User-Agent": ua,
-                "Accept": "*/*",
+                "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
+                "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "identity",
-                "Connection": "keep-alive"
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "video",
+                "Sec-Fetch-Mode": "no-cors"
             }
             if referer:
                 headers["Referer"] = referer
@@ -579,7 +662,7 @@ class DownloadTask:
         if not resp:
             headers = {
                 "User-Agent": user_agents[0],
-                "Accept": "*/*",
+                "Accept": "video/webm,video/ogg,video/*;q=0.9,*/*;q=0.8",
                 "Accept-Encoding": "identity",
             }
             if referer:
@@ -605,7 +688,6 @@ class DownloadTask:
                     pass
             raise ValueError(f"Server returned non-video content type ({c_type}).")
 
-
         total_size = downloaded
         if "content-length" in resp.headers:
             total_size += int(resp.headers["content-length"])
@@ -615,8 +697,21 @@ class DownloadTask:
         self.last_time = time.time()
         self.last_bytes = downloaded
 
+        first_chunk = True
         with open(part_path, mode) as f:
             for chunk in resp.iter_content(chunk_size=chunk_size):
+                if first_chunk and chunk:
+                    first_chunk = False
+                    head_sample = chunk[:512].lower()
+                    if b"<svg" in head_sample or b"<!doctype html" in head_sample or b"<html" in head_sample:
+                        f.close()
+                        if os.path.exists(part_path):
+                            try:
+                                os.remove(part_path)
+                            except Exception:
+                                pass
+                        raise ValueError("Server returned an HTML block page (bot protection / age check) instead of video.")
+
                 if self.is_cancelled:
                     f.close()
                     if os.path.exists(part_path):
@@ -671,7 +766,7 @@ class DownloadTask:
                         head = check_f.read(256).lower()
                         if b"<svg" in head or b"<!doctype html" in head or b"<html" in head:
                             os.remove(final_path)
-                            raise ValueError("Downloaded file is HTML/SVG markup, not a valid video.")
+                            raise ValueError("Server returned an HTML block page (bot protection / age check) instead of video.")
                 except Exception as ve:
                     if os.path.exists(final_path):
                         os.remove(final_path)
@@ -690,7 +785,8 @@ class DownloadTask:
             except Exception:
                 pass
 
-    def _download_via_ytdlp(self):
+    def _download_via_ytdlp(self, override_url: Optional[str] = None):
+        target_to_use = override_url or self.url
         clean_title = sanitize_filename(self.title)
         outtmpl = os.path.join(self.output_dir, f"{clean_title}_%(id)s.%(ext)s")
 
@@ -761,19 +857,26 @@ class DownloadTask:
         import yt_dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                info = ydl.extract_info(self.url, download=True)
+                info = ydl.extract_info(target_to_use, download=True)
             except Exception as primary_err:
                 clean_target = (self.direct_url or "").split("?")[0].lower()
                 is_direct = any(clean_target.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v", ".m3u8", ".mpd"])
-                if self.direct_url and self.direct_url != self.url and is_direct:
-                    print(f"[Downloader] Primary URL error ({primary_err}), executing direct stream HTTP download...")
-                    self._download_direct_http()
-                    return
-                elif self.direct_url and self.direct_url != self.url:
+                if self.direct_url and self.direct_url != target_to_use:
                     print(f"[Downloader] Primary URL error ({primary_err}), trying direct stream URL with yt-dlp...")
-                    info = ydl.extract_info(self.direct_url, download=True)
+                    try:
+                        info = ydl.extract_info(self.direct_url, download=True)
+                    except Exception as sec_err:
+                        if not getattr(self, "_direct_http_tried", False) and is_direct:
+                            self._direct_http_tried = True
+                            self._download_direct_http()
+                            return
+                        raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
                 else:
-                    raise primary_err
+                    if not getattr(self, "_direct_http_tried", False) and is_direct:
+                        self._direct_http_tried = True
+                        self._download_direct_http()
+                        return
+                    raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
 
         # Reliably resolve final file path after download completes
         final_file = None

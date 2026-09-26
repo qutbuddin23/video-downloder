@@ -70,7 +70,9 @@ def is_valid_media_url(u: str) -> bool:
     )
     if any(clean_u.endswith(ext) for ext in disallowed):
         return False
-    if "data:image/" in clean_u:
+    # Reject common non-video asset keywords in query or path
+    low_u = u_strip.lower()
+    if any(tok in low_u for tok in [".svg?", ".png?", ".jpg?", "format=svg", "format=png", "format=jpg", "format=webp", "data:image/", "mime=image/"]):
         return False
     return True
 
@@ -93,6 +95,11 @@ class MediaDetector:
             "logtostderr": False,
             "logger": SafeYtdlLogger(),
             "socket_timeout": 15,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "android_vr", "web"]
@@ -356,6 +363,8 @@ class MediaDetector:
             "detected_count": len(all_formats)
         }
 
+    _cookie_jar: Dict[str, dict] = {}
+
     def _sniff_webpage(self, url: str) -> Dict[str, Any]:
         """
         Deep webpage scanner: Fetches HTML and inspects:
@@ -363,11 +372,17 @@ class MediaDetector:
         - OpenGraph & Twitter video metadata
         - HLS .m3u8 playlist URLs
         - MPEG-DASH .mpd manifest URLs
-        - Direct .mp4 / .webm video links in page scripts
+        - Direct .mp4 / .webm video links in page scripts & JS configs
         """
         try:
             resp = requests.get(url, headers=self.DEFAULT_HEADERS, timeout=12)
             html = resp.text
+            domain = urllib.parse.urlsplit(url).netloc
+            if getattr(resp, "cookies", None):
+                try:
+                    MediaDetector._cookie_jar[domain] = resp.cookies.get_dict()
+                except Exception:
+                    pass
         except Exception as e:
             return {
                 "success": False,
@@ -377,6 +392,8 @@ class MediaDetector:
                 "error_message": f"Could not connect to URL: {str(e)}",
                 "formats": []
             }
+
+        clean_html = html.replace(r'\/', '/')
 
         # Determine Page Title
         title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
@@ -395,13 +412,13 @@ class MediaDetector:
         detected_urls = set()
 
         # 1. HTML5 <video> tags
-        for v in re.finditer(r'<video[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
+        for v in re.finditer(r'<video[^>]+src=["\']([^"\']+)["\']', clean_html, re.IGNORECASE):
             cand = urllib.parse.urljoin(url, v.group(1))
             if is_valid_media_url(cand):
                 detected_urls.add(cand)
 
         # 2. <source> tags strictly for video/audio (ignore picture/srcset/svg)
-        for s in re.finditer(r'<source\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', html, re.IGNORECASE):
+        for s in re.finditer(r'<source\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', clean_html, re.IGNORECASE):
             full_tag = s.group(0).lower()
             if "image/" in full_tag or "srcset" in full_tag:
                 continue
@@ -411,28 +428,29 @@ class MediaDetector:
 
         # 3. Meta tags (OpenGraph / Twitter card video)
         for meta_name in ["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"]:
-            m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(meta_name)}["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            m = re.search(rf'<meta[^>]+(?:property|name)=["\']{re.escape(meta_name)}["\'][^>]+content=["\']([^"\']+)["\']', clean_html, re.IGNORECASE)
             if not m:
-                m = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(meta_name)}["\']', html, re.IGNORECASE)
+                m = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(meta_name)}["\']', clean_html, re.IGNORECASE)
             if m and m.group(1):
                 cand = urllib.parse.urljoin(url, m.group(1))
                 if is_valid_media_url(cand):
                     detected_urls.add(cand)
 
-        # 4. Regex search in page scripts for .m3u8, .mpd, .mp4, .webm
-        m3u8_pattern = r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?'
-        mpd_pattern = r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?'
-        mp4_pattern = r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:\?[^\s"\'<>]*)?'
-
-        for match in re.findall(m3u8_pattern, html):
-            if is_valid_media_url(match):
-                detected_urls.add(match)
-        for match in re.findall(mpd_pattern, html):
-            if is_valid_media_url(match):
-                detected_urls.add(match)
-        for match in re.findall(mp4_pattern, html):
-            if is_valid_media_url(match):
-                detected_urls.add(match)
+        # 4. JS configurations and player script links (VideoJS, JWPlayer, Spankbang, FluidPlayer)
+        js_patterns = [
+            r'["\']?(?:file|src|url|video_url|stream_url|source|streamUrl|videoUrl|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
+            r'["\']?(?:1080p|720p|480p|360p|240p|high|med|low)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
+            r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?',
+            r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?',
+            r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:\?[^\s"\'<>]*)?'
+        ]
+        for pat in js_patterns:
+            for match in re.findall(pat, clean_html, re.IGNORECASE):
+                if isinstance(match, tuple):
+                    match = match[0]
+                cand = urllib.parse.urljoin(url, match)
+                if is_valid_media_url(cand):
+                    detected_urls.add(cand)
 
         if not detected_urls:
             return {
@@ -444,9 +462,29 @@ class MediaDetector:
                 "formats": []
             }
 
-        # Build formats from detected URLs
+        # Stream prioritization: prioritize full video streams and HLS over trailers/previews
+        def _stream_priority(u: str) -> int:
+            u_low = u.lower()
+            score = 100
+            if any(p in u_low for p in ["trailer", "preview", "sample", "intro", "thumb", "teaser", "snippet"]):
+                score -= 60
+            if ".m3u8" in u_low:
+                score += 35
+            if "1080" in u_low:
+                score += 25
+            elif "720" in u_low:
+                score += 20
+            elif "480" in u_low:
+                score += 15
+            elif ".mp4" in u_low:
+                score += 10
+            return score
+
+        sorted_urls = sorted(detected_urls, key=_stream_priority, reverse=True)
+
+        # Build formats from sorted detected URLs
         formats = []
-        for i, media_url in enumerate(detected_urls):
+        for i, media_url in enumerate(sorted_urls):
             clean_url = media_url.split("?")[0].lower()
             ext = "m3u8" if clean_url.endswith(".m3u8") else ("mpd" if clean_url.endswith(".mpd") else "mp4")
             label = f"Stream {i+1} ({ext.upper()})"

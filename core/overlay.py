@@ -324,6 +324,13 @@ class AndroidBubbleTouchListener(PythonJavaClass):
                 self.initial_touch_x = event.getRawX()
                 self.initial_touch_y = event.getRawY()
                 self.has_moved = False
+                try:
+                    # Remove FLAG_NOT_FOCUSABLE during touch interaction so overlay acquires window focus
+                    self.params_ref.flags = 256  # FLAG_LAYOUT_IN_SCREEN
+                    self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
+                    self.view_ref.requestFocus()
+                except Exception:
+                    pass
                 return True
             elif action == MotionEvent.ACTION_MOVE:
                 dx = int(event.getRawX() - self.initial_touch_x)
@@ -335,6 +342,12 @@ class AndroidBubbleTouchListener(PythonJavaClass):
                 self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
                 return True
             elif action == MotionEvent.ACTION_UP:
+                try:
+                    # Restore FLAG_NOT_FOCUSABLE so overlay does not steal touches from external apps
+                    self.params_ref.flags = 8 | 256
+                    self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
+                except Exception:
+                    pass
                 if not self.has_moved:
                     self.overlay_ref._on_bubble_clicked()
                 return True
@@ -535,59 +548,15 @@ class AndroidFloatingOverlay:
         threading.Thread(target=self._handle_bubble_click_async, daemon=True).start()
 
     def _handle_bubble_click_async(self):
-        # 1. Non-intrusively read clipboard without opening or bringing the app to the front
-        clip_text = ""
-        try:
-            from android.runnable import run_on_ui_thread
-            if self.floating_view and self.window_manager and hasattr(self, 'params') and self.params:
-                @run_on_ui_thread
-                def _request_window_focus():
-                    try:
-                        # Temporarily remove FLAG_NOT_FOCUSABLE (8) so overlay window acquires focus for clipboard
-                        self.params.flags = 256  # FLAG_LAYOUT_IN_SCREEN
-                        self.window_manager.updateViewLayout(self.floating_view, self.params)
-                        self.floating_view.requestFocus()
-                    except Exception:
-                        pass
-                _request_window_focus()
-                time.sleep(0.06)
+        # 1. Read clipboard non-intrusively (window acquired focus during touch ACTION_DOWN)
+        clip_text = get_android_clipboard_text()
+        if not clip_text and hasattr(self, "last_clipboard"):
+            clip_text = self.last_clipboard
 
-            clip_text = get_android_clipboard_text()
-
-            if self.floating_view and self.window_manager and hasattr(self, 'params') and self.params:
-                @run_on_ui_thread
-                def _restore_window_flags():
-                    try:
-                        # Restore FLAG_NOT_FOCUSABLE (8) | FLAG_LAYOUT_IN_SCREEN (256)
-                        self.params.flags = 8 | 256
-                        self.window_manager.updateViewLayout(self.floating_view, self.params)
-                    except Exception:
-                        pass
-                _restore_window_flags()
-        except Exception as ce:
-            print(f"[Overlay] Window focus clipboard notice: {ce}")
-
-        # 2. If background clipboard reading was restricted by Android 10+, use micro-focus and immediately moveTaskToBack
-        if not clip_text:
-            try:
-                from jnius import autoclass
-                PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                activity = PythonActivity.mActivity
-                if activity:
-                    Intent = autoclass("android.content.Intent")
-                    intent = Intent(activity, activity.getClass())
-                    intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    activity.startActivity(intent)
-                    time.sleep(0.12)
-                    clip_text = get_android_clipboard_text()
-                    activity.moveTaskToBack(True)
-            except Exception as fe:
-                print(f"[Overlay] Micro-focus notice: {fe}")
-
-        # 3. Extract media or cloud file URL from clipboard
-        target_url = detect_video_url(clip_text) or detect_video_url(getattr(self, "last_clipboard", ""))
+        # 2. Extract media or cloud file URL from clipboard
+        target_url = detect_video_url(clip_text)
         if target_url:
-            show_android_toast("⚡ Link Detected! Starting download...")
+            show_android_toast("⚡ Video Link Detected! Downloading in background...")
             if self.on_trigger_callback:
                 self.on_trigger_callback(target_url)
         else:

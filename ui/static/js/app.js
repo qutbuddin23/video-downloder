@@ -512,7 +512,10 @@ function renderDownloadsList(items) {
                 <div class="dl-actions">
                     ${isDownloading ? `<button class="btn btn-secondary btn-sm" onclick="pauseDownload('${item.id}')">⏸ Pause</button>` : ''}
                     ${isPaused ? `<button class="btn btn-primary btn-sm" onclick="resumeDownload('${item.id}')">▶ Resume</button>` : ''}
-                    ${item.status === 'failed' ? `<button class="btn btn-primary btn-sm" onclick="retryDownload('${item.url}')">🔄 Retry</button>` : ''}
+                    ${item.status === 'failed' ? `
+                        <button class="btn btn-primary btn-sm" onclick="openUrlInBrowser('${encodeURIComponent(item.url)}')">🌐 Open in Browser</button>
+                        <button class="btn btn-secondary btn-sm" onclick="retryDownload('${item.url}')">🔄 Retry</button>
+                    ` : ''}
                     ${!isCompleted ? `<button class="btn btn-danger btn-sm" onclick="cancelDownload('${item.id}')">✕ Cancel</button>` : ''}
                     ${isCompleted ? (isNonVideo ? `
                         <button class="btn btn-primary btn-sm" onclick="openInPhonePlayer('${item.id}')">📂 Open File</button>
@@ -663,31 +666,6 @@ async function checkVaultStatus() {
     } catch (err) {
         console.error('Error checking vault:', err);
     }
-}
-
-function startOverlayPolling() {
-    setInterval(async () => {
-        try {
-            const res = await fetch('/api/overlay/latest-url');
-            const data = await res.json();
-            if (data && data.url) {
-                if (data.auto_downloaded) {
-                    showToast(`⚡ Auto-Downloading: ${data.title || 'Video'}`);
-                    switchTab('downloads');
-                    loadDownloads();
-                } else {
-                    switchTab('home');
-                    const urlInput = document.getElementById('url-input');
-                    if (urlInput) {
-                        urlInput.value = data.url;
-                        triggerAnalyze(data.url);
-                    }
-                }
-            }
-        } catch (e) {
-            // Ignore polling errors
-        }
-    }, 1500);
 }
 
 async function submitPin() {
@@ -1261,3 +1239,15 @@ function initBrowser() {
         });
     }
 }
+
+function openUrlInBrowser(encodedUrl) {
+    const rawUrl = decodeURIComponent(encodedUrl || '');
+    if (!rawUrl) return;
+    switchTab('browser');
+    const input = document.getElementById('browser-url-input');
+    const iframe = document.getElementById('browser-webview');
+    if (input) input.value = rawUrl;
+    if (iframe) iframe.src = rawUrl;
+}
+window.openUrlInBrowser = openUrlInBrowser;
+

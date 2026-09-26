@@ -14,9 +14,10 @@ from core.storage_manager import format_bytes
 
 
 TERABOX_DOMAINS = (
-    "terabox.com", "terabox.app", "1024tera.com", "mirrobox.com",
+    "terabox.com", "terabox.app", "1024tera.com", "1024terabox.com", "mirrobox.com",
     "nephobox.com", "freeterabox.com", "4funbox.com", "teraboxlink.com",
-    "tibibox.com", "teraboxshare.com"
+    "tibibox.com", "teraboxshare.com", "terasharelink.com", "terafileshare.com",
+    "momerybox.com"
 )
 
 
@@ -83,7 +84,53 @@ def get_terabox_file_info(url: str, cookie: str = "") -> Dict[str, Any]:
     try:
         init_res = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         if init_res.ok:
-            page_text = init_res.text
+            # Direct HTML state inspection
+            if "server_filename" in page_text and "dlink" in page_text:
+                try:
+                    state_match = re.search(r'window\.server_data\s*=\s*(\{.*?\});', page_text) or re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', page_text)
+                    if state_match:
+                        raw_json = json.loads(state_match.group(1))
+                        flist = raw_json.get("list") or raw_json.get("file_list") or []
+                        if flist and isinstance(flist, list):
+                            item = flist[0]
+                            dlink = item.get("dlink")
+                            filename = item.get("server_filename", "terabox_download")
+                            size = int(item.get("size", 0))
+                            ext = os.path.splitext(filename)[1].lstrip('.').lower() or "bin"
+                            if dlink:
+                                fmt = {
+                                    "format_id": "terabox_direct",
+                                    "quality_label": f"TeraBox ({ext.upper()})",
+                                    "resolution": "Cloud File",
+                                    "height": 0,
+                                    "ext": ext,
+                                    "codec": "Direct Cloud Stream",
+                                    "filesize": size,
+                                    "filesize_str": format_bytes(size),
+                                    "has_audio": True,
+                                    "has_video": True,
+                                    "direct_url": dlink,
+                                    "download_selector": "direct",
+                                    "referer": "https://www.terabox.com/",
+                                    "is_terabox": True
+                                }
+                                return {
+                                    "success": True,
+                                    "title": filename,
+                                    "filename": filename,
+                                    "thumbnail": item.get("thumbs", {}).get("url3", ""),
+                                    "duration": 0,
+                                    "duration_str": "Cloud File",
+                                    "source_url": url,
+                                    "direct_url": dlink,
+                                    "is_protected": False,
+                                    "is_terabox": True,
+                                    "formats": [fmt],
+                                    "detected_count": 1
+                                }
+                except Exception:
+                    pass
+
             js_token = _find_between(page_text, 'fn%28%22', '%22%29')
             logid = _find_between(page_text, 'dp-logid=', '&')
             bdstoken = _find_between(page_text, 'bdstoken":"', '"')

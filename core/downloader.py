@@ -492,11 +492,18 @@ class DownloadTask:
                     print(f"[Downloader] Direct HTTP download notice ({direct_err}), falling back to streaming engine...")
                     if self.is_cancelled or self.is_paused:
                         return
-                    # Fallback to yt-dlp on direct_url or url
+                    # Fallback to yt-dlp: First try self.url (the webpage URL for full site extractor), then self.direct_url
                     try:
-                        self._download_via_ytdlp(override_url=self.direct_url or self.url)
+                        self._download_via_ytdlp(override_url=self.url)
                         return
-                    except Exception:
+                    except Exception as ytdl_webpage_err:
+                        print(f"[Downloader] yt-dlp webpage fallback notice ({ytdl_webpage_err})")
+                        if self.direct_url and self.direct_url != self.url:
+                            try:
+                                self._download_via_ytdlp(override_url=self.direct_url)
+                                return
+                            except Exception:
+                                pass
                         raise direct_err
 
             # Strategy 5: Resilient yt-dlp download for all platforms (YouTube, Twitter, TikTok, Tube sites, etc.)
@@ -593,90 +600,121 @@ class DownloadTask:
         part_path = os.path.join(self.output_dir, f"{final_filename}.part")
         final_path = os.path.join(self.output_dir, final_filename)
 
-        # Determine appropriate referer
-        referer = custom_referer
-        if not referer:
-            clean_url = (self.url or "").split("?")[0].lower()
-            if self.url and not any(clean_url.endswith(e) for e in DIRECT_DOWNLOAD_EXTS):
-                referer = self.url
-            elif target_url:
-                try:
-                    parts = urllib.parse.urlsplit(target_url)
-                    referer = f"{parts.scheme}://{parts.netloc}/"
-                except Exception:
-                    pass
+        # Build candidate referers in priority order
+        referer_candidates = []
+        if custom_referer:
+            referer_candidates.append(custom_referer)
+        if self.url and not any((self.url.split("?")[0].lower()).endswith(e) for e in DIRECT_DOWNLOAD_EXTS):
+            referer_candidates.append(self.url)
+            try:
+                parts = urllib.parse.urlsplit(self.url)
+                referer_candidates.append(f"{parts.scheme}://{parts.netloc}/")
+            except Exception:
+                pass
+        if target_url:
+            try:
+                parts = urllib.parse.urlsplit(target_url)
+                referer_candidates.append(f"{parts.scheme}://{parts.netloc}/")
+            except Exception:
+                pass
+        referer_candidates.append("")
 
-        user_agents = [
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        seen_refs = set()
+        deduped_refs = []
+        for r_cand in referer_candidates:
+            if r_cand not in seen_refs:
+                seen_refs.add(r_cand)
+                deduped_refs.append(r_cand)
+
+        # Multi-profile browser headers to defeat 470 / 403 / anti-bot blocks
+        header_profiles = [
+            # Profile 1: Mobile Chrome Browser
+            {
+                "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Dest": "video",
+            },
+            # Profile 2: Desktop Chrome Browser
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            # Profile 3: Android MediaPlayer / Stagefright (Bypasses bot checks for media CDNs)
+            {
+                "User-Agent": "stagefright/1.2 (Linux;Android 10)",
+                "Accept": "*/*",
+                "Connection": "Keep-Alive",
+            },
+            # Profile 4: ExoPlayer
+            {
+                "User-Agent": "ExoPlayerLib/2.18.7 (Linux; Android 10)",
+                "Accept": "*/*",
+            },
+            # Profile 5: VLC Media Player
+            {
+                "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
+                "Accept": "*/*",
+            },
         ]
 
+        from core.detector import MediaDetector
+        all_cookies = {}
+        if self.url:
+            all_cookies.update(MediaDetector.get_cookies_for_url(self.url))
+        if target_url and target_url != self.url:
+            all_cookies.update(MediaDetector.get_cookies_for_url(target_url))
+
         session = requests.Session()
-        domain = urllib.parse.urlsplit(self.url or target_url).netloc
-        try:
-            from core.detector import MediaDetector
-            stored_cookies = MediaDetector._cookie_jar.get(domain, {})
-            if stored_cookies:
-                session.cookies.update(stored_cookies)
-            elif referer and referer.startswith("http"):
-                session.get(referer, headers={"User-Agent": user_agents[0]}, timeout=8, allow_redirects=True)
-        except Exception:
-            pass
+        if all_cookies:
+            session.cookies.update(all_cookies)
+
+        downloaded = 0
+        if os.path.exists(part_path):
+            downloaded = os.path.getsize(part_path)
 
         resp = None
-        for ua in user_agents:
-            headers = {
-                "User-Agent": ua,
-                "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "identity",
-                "Connection": "keep-alive",
-                "Sec-Fetch-Dest": "video",
-                "Sec-Fetch-Mode": "no-cors"
-            }
-            if referer:
-                headers["Referer"] = referer
+        last_status_code = 0
+        last_reason = ""
+
+        for ref in deduped_refs:
+            for prof in header_profiles:
+                headers = dict(prof)
+                if ref:
+                    headers["Referer"] = ref
+                    try:
+                        p = urllib.parse.urlsplit(ref)
+                        headers["Origin"] = f"{p.scheme}://{p.netloc}"
+                    except Exception:
+                        pass
+                if downloaded > 0:
+                    headers["Range"] = f"bytes={downloaded}-"
+
                 try:
-                    parts = urllib.parse.urlsplit(referer)
-                    headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
+                    r = session.get(target_url, headers=headers, stream=True, timeout=15)
+                    last_status_code = r.status_code
+                    last_reason = r.reason or ""
+                    if r.status_code in (200, 206):
+                        c_type = r.headers.get("content-type", "").lower()
+                        if not ("image/" in c_type or "svg" in c_type or "text/html" in c_type):
+                            resp = r
+                            break
                 except Exception:
-                    pass
-
-            downloaded = 0
-            if os.path.exists(part_path):
-                downloaded = os.path.getsize(part_path)
-                headers["Range"] = f"bytes={downloaded}-"
-
-            try:
-                r = session.get(target_url, headers=headers, stream=True, timeout=25)
-                if r.status_code in (200, 206):
-                    c_type = r.headers.get("content-type", "").lower()
-                    if not ("image/" in c_type or "svg" in c_type or "text/html" in c_type):
-                        resp = r
-                        break
-                elif r.status_code in (403, 470, 401):
                     continue
-            except Exception:
-                continue
+            if resp:
+                break
 
         if not resp:
-            headers = {
-                "User-Agent": user_agents[0],
-                "Accept": "video/webm,video/ogg,video/*;q=0.9,*/*;q=0.8",
-                "Accept-Encoding": "identity",
-            }
-            if referer:
-                headers["Referer"] = referer
-            resp = session.get(target_url, headers=headers, stream=True, timeout=25)
-
-        # Strictly validate response status code
-        if resp.status_code not in (200, 206):
             if os.path.exists(part_path):
                 try:
                     os.remove(part_path)
                 except Exception:
                     pass
-            raise ValueError(f"HTTP Server returned status {resp.status_code}: {resp.reason}")
+            status_msg = f"HTTP Server returned status {last_status_code}: {last_reason}" if last_status_code else "Direct stream request failed"
+            raise ValueError(status_msg)
 
         # Strictly validate content type
         c_type = resp.headers.get("content-type", "").lower()
@@ -831,6 +869,17 @@ class DownloadTask:
         }
         if self.url:
             http_hdrs["Referer"] = self.url
+
+        from core.detector import MediaDetector
+        all_cookies = {}
+        if self.url:
+            all_cookies.update(MediaDetector.get_cookies_for_url(self.url))
+        if target_to_use and target_to_use != self.url:
+            all_cookies.update(MediaDetector.get_cookies_for_url(target_to_use))
+
+        cookie_str = "; ".join(f"{k}={v}" for k, v in all_cookies.items())
+        if cookie_str:
+            http_hdrs["Cookie"] = cookie_str
 
         ydl_opts = {
             "format": format_sel,

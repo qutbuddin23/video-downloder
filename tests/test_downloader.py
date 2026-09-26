@@ -172,4 +172,54 @@ def test_download_direct_http_status_validation(temp_db):
             task._download_direct_http()
 
 
+def test_download_direct_http_multi_profile_recovery(temp_db):
+    from core.downloader import DownloadTask
+
+    db, temp_dir = temp_db
+    task = DownloadTask(
+        task_id="recovery_test_470",
+        url="https://example.com/watch",
+        title="Recovery 470 Test",
+        format_selector="b",
+        direct_url="https://cdn.example.com/stream.mp4",
+        output_dir=temp_dir,
+        db=db
+    )
+
+    # 1st attempt: 470 Client Error; 2nd attempt (alternate profile): 200 OK with binary video
+    blocked_resp = MagicMock()
+    blocked_resp.status_code = 470
+    blocked_resp.reason = "Client Error"
+
+    success_resp = MagicMock()
+    success_resp.status_code = 200
+    success_resp.headers = {"content-type": "video/mp4", "content-length": "100"}
+    success_resp.iter_content = MagicMock(return_value=[b"\x00\x00\x00\x1cftypisom" + b"A" * 80])
+
+    with patch("requests.Session.get", side_effect=[blocked_resp, success_resp]):
+        task._download_direct_http()
+        assert os.path.exists(os.path.join(temp_dir, f"Recovery_470_Test_{task.task_id[:6]}.mp4"))
+
+
+def test_direct_http_470_triggers_ytdlp_webpage_fallback(temp_db):
+    from core.downloader import DownloadTask
+
+    db, temp_dir = temp_db
+    task = DownloadTask(
+        task_id="fallback_470_123",
+        url="https://spankbang.com/8xxxx/video/test",
+        title="Tube Video",
+        format_selector="best[format_id!^=sb]",
+        direct_url="https://cdn.spankbang.party/video.mp4",
+        output_dir=temp_dir,
+        db=db
+    )
+
+    with patch.object(task, "_download_direct_http", side_effect=ValueError("HTTP Server returned status 470: Client Error")):
+        with patch.object(task, "_download_via_ytdlp") as mock_ytdlp:
+            task._run()
+            # Verify yt-dlp was called with the WEBPAGE url, not the blocked CDN direct_url
+            mock_ytdlp.assert_called_once_with(override_url="https://spankbang.com/8xxxx/video/test")
+
+
 

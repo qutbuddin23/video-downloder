@@ -77,12 +77,54 @@ def is_valid_media_url(u: str) -> bool:
     return True
 
 
+def get_android_cookies(url: str) -> Dict[str, str]:
+    """Extracts live session cookies from Android WebView CookieManager if on Android."""
+    cookies = {}
+    if not url:
+        return cookies
+    try:
+        from jnius import autoclass
+        CookieManager = autoclass("android.webkit.CookieManager")
+        cm = CookieManager.getInstance()
+        cookie_str = cm.getCookie(url)
+        if cookie_str:
+            for item in cookie_str.split(";"):
+                if "=" in item:
+                    k, v = item.strip().split("=", 1)
+                    cookies[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return cookies
+
+
 class MediaDetector:
     DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Language": "en-US,en;q=0.9",
     }
+    _cookie_jar: Dict[str, dict] = {}
+
+    @classmethod
+    def get_cookies_for_url(cls, url: str) -> Dict[str, str]:
+        """Collects combined session cookies from memory cache and Android CookieManager."""
+        all_cookies = {}
+        if not url:
+            return all_cookies
+        try:
+            domain = urllib.parse.urlsplit(url).netloc.lower()
+            for d_key, c_dict in cls._cookie_jar.items():
+                d_clean = d_key.lower().lstrip(".")
+                if d_clean in domain or domain in d_clean:
+                    all_cookies.update(c_dict)
+        except Exception:
+            pass
+
+        android_c = get_android_cookies(url)
+        if android_c:
+            all_cookies.update(android_c)
+
+        return all_cookies
 
     def __init__(self):
         self.ydl_opts = {
@@ -363,8 +405,6 @@ class MediaDetector:
             "detected_count": len(all_formats)
         }
 
-    _cookie_jar: Dict[str, dict] = {}
-
     def _sniff_webpage(self, url: str) -> Dict[str, Any]:
         """
         Deep webpage scanner: Fetches HTML and inspects:
@@ -375,7 +415,8 @@ class MediaDetector:
         - Direct .mp4 / .webm video links in page scripts & JS configs
         """
         try:
-            resp = requests.get(url, headers=self.DEFAULT_HEADERS, timeout=12)
+            cookies = MediaDetector.get_cookies_for_url(url)
+            resp = requests.get(url, headers=self.DEFAULT_HEADERS, cookies=cookies or None, timeout=12)
             html = resp.text
             domain = urllib.parse.urlsplit(url).netloc
             if getattr(resp, "cookies", None):

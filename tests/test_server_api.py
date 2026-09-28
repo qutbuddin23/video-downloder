@@ -213,6 +213,43 @@ def test_settings_api_get_and_post():
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_storage_browse_api():
+    status, raw = make_request("/api/storage/browse")
+    assert status == 200
+    data = json.loads(raw)
+    assert "current_path" in data
+    assert "directories" in data
+    assert "shortcuts" in data
+    assert isinstance(data["directories"], list)
+    assert isinstance(data["shortcuts"], list)
+
+
+def test_storage_create_dir_and_permission():
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Create directory
+        status, raw = make_request("/api/storage/create-dir", method="POST", data={
+            "parent_path": temp_dir,
+            "name": "MyNewTestFolder"
+        })
+        assert status == 200
+        res = json.loads(raw)
+        assert res["success"] is True
+        assert os.path.exists(res["path"])
+        assert res["name"] == "MyNewTestFolder"
+
+        # Check permission status endpoint
+        status, raw_perm = make_request("/api/storage/permission-status")
+        assert status == 200
+        perm_data = json.loads(raw_perm)
+        assert "all_files_access" in perm_data
+        assert "overlay_permission" in perm_data
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 
 
 

@@ -835,7 +835,7 @@ class DownloadTask:
             total_size += int(resp.headers["content-length"])
 
         mode = "ab" if downloaded > 0 else "wb"
-        chunk_size = 1024 * 256  # 256 KB chunks for high throughput
+        chunk_size = 1024 * 1024  # 1 MB chunk buffer for maximum network throughput
         self.last_time = time.time()
         self.last_bytes = downloaded
 
@@ -1002,8 +1002,10 @@ class DownloadTask:
             "geo_bypass": True,
             "logtostderr": False,
             "logger": SafeYtdlLogger(),
-            "concurrent_fragment_downloads": 4,  # High speed multi-part downloads
-            "buffersize": 1024 * 1024,          # 1 MB buffer for fast writes
+            "concurrent_fragment_downloads": 5,  # High speed multi-part downloads
+            "buffersize": 2 * 1024 * 1024,      # 2 MB buffer for fast disk writes
+            "http_chunk_size": 10485760,        # 10 MB HTTP chunks
+            "socket_timeout": 20,
             "retries": 10,
             "fragment_retries": 10,
             "http_headers": http_hdrs,
@@ -1107,7 +1109,7 @@ class DownloadManager:
         saved_dir = self.db.get_setting("download_folder", default_dir)
 
         # Auto-migrate away from internal sandbox or non-writable paths
-        if not saved_dir or not is_directory_writable(saved_dir):
+        if not saved_dir or not is_directory_writable(saved_dir) or "/Android/data/" in saved_dir:
             saved_dir = default_dir
             if not is_directory_writable(saved_dir):
                 saved_dir = os.path.join(get_base_data_dir(), "downloads")

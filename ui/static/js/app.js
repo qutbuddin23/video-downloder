@@ -456,10 +456,17 @@ function initDownloads() {
 function startDownloadPolling() {
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(() => {
-        if (currentTab === 'downloads') {
-            loadDownloads(false);
-        }
+        loadDownloads(false);
     }, 2000);
+
+    // Immediate reactive refresh when returning to app or unlocking phone
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            loadDownloads(false);
+            checkClipboardForVideo();
+            checkOverlayPermissionStatus();
+        }
+    });
 }
 
 let lastRenderedDownloadIds = '';
@@ -974,6 +981,18 @@ async function loadSettings() {
             });
         }
 
+        // Check All Files Access permission status on Android 11+
+        try {
+            const permRes = await fetch('/api/storage/permission-status');
+            if (permRes.ok) {
+                const permData = await permRes.json();
+                const storageBanner = document.getElementById('storage-perm-banner');
+                if (storageBanner) {
+                    storageBanner.style.display = (permData.is_android && !permData.all_files_access) ? 'block' : 'none';
+                }
+            }
+        } catch (_) {}
+
         await checkOverlayPermissionStatus();
     } catch (err) {
         console.error('Error loading settings:', err);
@@ -996,8 +1015,10 @@ async function saveCustomDownloadDir(customPath) {
         });
         const data = await res.json();
         if (data.success) {
-            showToast('✅ Download location updated!', 3500);
+            const folderName = path.split('/').pop().split('\\').pop() || path;
+            showToast(`✅ Download folder set to: ${folderName}`, 3500);
             await loadSettings();
+            await loadStorageStats();
         } else {
             showToast('❌ ' + (data.error || 'Failed to update folder.'), 4500);
         }
@@ -1005,6 +1026,136 @@ async function saveCustomDownloadDir(customPath) {
         showToast('Failed to save download location.', 3500);
     }
 }
+
+// --- Visual Interactive Folder Picker ---
+let folderPickerCurrentPath = '';
+
+async function openFolderPicker() {
+    const modal = document.getElementById('folder-picker-modal');
+    if (!modal) return;
+    modal.classList.add('active');
+
+    const dirDisplay = document.getElementById('current-download-dir-display');
+    const currentPath = dirDisplay ? dirDisplay.textContent.trim() : '';
+    await browseToFolder(currentPath || '');
+}
+
+function closeFolderPicker() {
+    const modal = document.getElementById('folder-picker-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+async function browseToFolder(path) {
+    const listEl = document.getElementById('folder-picker-list');
+    const pathEl = document.getElementById('folder-picker-current-path');
+    const shortcutsEl = document.getElementById('folder-picker-shortcuts');
+
+    if (listEl) listEl.innerHTML = '<div style="text-align:center; padding:20px; color:#94A3B8; font-size:12px;">Loading folders...</div>';
+
+    try {
+        const res = await fetch(`/api/storage/browse?path=${encodeURIComponent(path || '')}`);
+        const data = await res.json();
+        folderPickerCurrentPath = data.current_path;
+        if (pathEl) pathEl.textContent = data.current_path;
+
+        // Render quick shortcut pills via DOM elements
+        if (shortcutsEl && Array.isArray(data.shortcuts)) {
+            shortcutsEl.innerHTML = '';
+            data.shortcuts.forEach(sc => {
+                const pill = document.createElement('div');
+                pill.className = 'folder-shortcut-pill';
+                pill.innerHTML = `<span>${sc.icon}</span> <span>${escapeHtml(sc.label)}</span>`;
+                pill.onclick = () => browseToFolder(sc.path);
+                shortcutsEl.appendChild(pill);
+            });
+        }
+
+        // Render folder rows via DOM elements
+        if (listEl) {
+            listEl.innerHTML = '';
+            if (data.parent_path) {
+                const upRow = document.createElement('div');
+                upRow.className = 'folder-row is-up';
+                upRow.innerHTML = `
+                    <div class="folder-row-title">
+                        <span>⬆</span> <span>.. (Parent Directory)</span>
+                    </div>
+                    <span style="font-size:11px; color:#64748B;">Back</span>
+                `;
+                upRow.onclick = () => browseToFolder(data.parent_path);
+                listEl.appendChild(upRow);
+            }
+
+            if (data.directories && data.directories.length > 0) {
+                data.directories.forEach(d => {
+                    const row = document.createElement('div');
+                    row.className = 'folder-row';
+                    row.innerHTML = `
+                        <div class="folder-row-title">
+                            <span>📁</span> <span style="word-break:break-all;">${escapeHtml(d.name)}</span>
+                        </div>
+                        <span style="font-size:10px; color:${d.is_writable ? '#34D399' : '#EF4444'};">
+                            ${d.is_writable ? '✓ Writable' : '🔒 Protected'}
+                        </span>
+                    `;
+                    row.onclick = () => browseToFolder(d.path);
+                    listEl.appendChild(row);
+                });
+            } else {
+                listEl.innerHTML = '<div style="text-align:center; padding:20px; color:#94A3B8; font-size:12px;">No subfolders inside this directory.<br>Tap "Select This Folder" to use it.</div>';
+            }
+        }
+    } catch (err) {
+        if (listEl) listEl.innerHTML = '<div style="text-align:center; padding:20px; color:#EF4444; font-size:12px;">Failed to load directories.</div>';
+    }
+}
+
+async function confirmSelectFolder() {
+    if (!folderPickerCurrentPath) return;
+    closeFolderPicker();
+    await saveCustomDownloadDir(folderPickerCurrentPath);
+}
+
+async function promptCreateNewFolder() {
+    if (!folderPickerCurrentPath) return;
+    const name = prompt('Enter name for new folder:');
+    if (!name || !name.trim()) return;
+
+    try {
+        const res = await fetch('/api/storage/create-dir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parent_path: folderPickerCurrentPath, name: name.trim() })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`✅ Created folder: ${data.name}`);
+            await browseToFolder(data.path);
+        } else {
+            showToast(`❌ ${data.error || 'Failed to create folder'}`);
+        }
+    } catch (err) {
+        showToast('Error creating folder.');
+    }
+}
+
+async function requestAllFilesAccess() {
+    showToast('Opening Android Storage Settings... Please enable All Files Access.', 4000);
+    try {
+        await fetch('/api/storage/request-full-access', { method: 'POST' });
+    } catch (_) {}
+}
+
 
 async function checkOverlayPermissionStatus() {
     try {
@@ -1343,6 +1494,13 @@ window.openPreviewInPhonePlayer = openPreviewInPhonePlayer;
 window.openInPhonePlayer = openInPhonePlayer;
 window.openCurrentInExternalPlayer = openCurrentInExternalPlayer;
 window.appGoBack = appGoBack;
+window.openFolderPicker = openFolderPicker;
+window.closeFolderPicker = closeFolderPicker;
+window.browseToFolder = browseToFolder;
+window.confirmSelectFolder = confirmSelectFolder;
+window.promptCreateNewFolder = promptCreateNewFolder;
+window.requestAllFilesAccess = requestAllFilesAccess;
+window.saveCustomDownloadDir = saveCustomDownloadDir;
 
 // --- In-App Browser ---
 function initBrowser() {

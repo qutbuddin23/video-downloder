@@ -324,30 +324,17 @@ class AndroidBubbleTouchListener(PythonJavaClass):
                 self.initial_touch_x = event.getRawX()
                 self.initial_touch_y = event.getRawY()
                 self.has_moved = False
-                try:
-                    # Remove FLAG_NOT_FOCUSABLE during touch interaction so overlay acquires window focus
-                    self.params_ref.flags = 256  # FLAG_LAYOUT_IN_SCREEN
-                    self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
-                    self.view_ref.requestFocus()
-                except Exception:
-                    pass
                 return True
             elif action == MotionEvent.ACTION_MOVE:
                 dx = int(event.getRawX() - self.initial_touch_x)
                 dy = int(event.getRawY() - self.initial_touch_y)
-                if abs(dx) > 10 or abs(dy) > 10:
+                if abs(dx) > 8 or abs(dy) > 8:
                     self.has_moved = True
                 self.params_ref.x = self.initial_x + dx
                 self.params_ref.y = self.initial_y + dy
                 self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
                 return True
             elif action == MotionEvent.ACTION_UP:
-                try:
-                    # Restore FLAG_NOT_FOCUSABLE so overlay does not steal touches from external apps
-                    self.params_ref.flags = 8 | 256
-                    self.wm_ref.updateViewLayout(self.view_ref, self.params_ref)
-                except Exception:
-                    pass
                 if not self.has_moved:
                     self.overlay_ref._on_bubble_clicked()
                 return True
@@ -548,7 +535,7 @@ class AndroidFloatingOverlay:
         threading.Thread(target=self._handle_bubble_click_async, daemon=True).start()
 
     def _handle_bubble_click_async(self):
-        # 1. Read clipboard non-intrusively (window acquired focus during touch ACTION_DOWN)
+        # 1. Read clipboard non-intrusively
         clip_text = get_android_clipboard_text()
         if not clip_text and hasattr(self, "last_clipboard"):
             clip_text = self.last_clipboard
@@ -560,7 +547,28 @@ class AndroidFloatingOverlay:
             if self.on_trigger_callback:
                 self.on_trigger_callback(target_url)
         else:
-            show_android_toast("Universal Downloader: Copy any video or file link, then tap ⚡")
+            # Android 10+ restricts background clipboard reading until app is foregrounded.
+            # Bring Universal Downloader to front so it gains window focus, reads clipboard, and starts download!
+            show_android_toast("⚡ Opening Universal Downloader...")
+            try:
+                from jnius import autoclass
+                from android.runnable import run_on_ui_thread
+
+                @run_on_ui_thread
+                def _open_app():
+                    try:
+                        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                        activity = PythonActivity.mActivity
+                        if activity:
+                            Intent = autoclass("android.content.Intent")
+                            intent = Intent(activity, PythonActivity)
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                            activity.startActivity(intent)
+                    except Exception as oe:
+                        print(f"[Overlay] open activity error: {oe}")
+                _open_app()
+            except Exception as e:
+                print(f"[Overlay] bring to front notice: {e}")
 
 
     def _clipboard_monitor_loop(self):

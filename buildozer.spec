@@ -21,8 +21,8 @@ android.api = 33
 android.minapi = 26
 android.ndk = 25b
 
-# Background service
-services = downloader:service.py
+# Background foreground service for uninterrupted screen-off downloads
+services = downloader:service.py:foreground:sticky
 
 # Allow local HTTP traffic to localhost 127.0.0.1
 android.extra_manifest_application_arguments = ./extra_manifest_application_arguments.xml

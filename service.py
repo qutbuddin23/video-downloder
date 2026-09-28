@@ -1,12 +1,14 @@
 """
 Android Background Service for Universal Video Downloader.
 Runs on Android devices via Python-for-Android / Buildozer.
-Promotes the service to a Foreground Service with ongoing notification and PARTIAL_WAKE_LOCK,
-ensuring downloads continue uninterrupted when the screen is off, phone is locked, or other apps are active.
+Promotes the service to a Foreground Service with ongoing notification, PARTIAL_WAKE_LOCK,
+and high-performance WifiLock, and runs the core media download engine so downloads
+continue uninterrupted at maximum speed when the screen is off, phone is locked, or other apps are active.
 """
 
 import time
 import os
+import threading
 
 try:
     from jnius import autoclass, cast
@@ -73,21 +75,33 @@ def promote_to_foreground():
         builder.setOngoing(True)
         notification = builder.build()
 
-        service.startForeground(9999, notification)
-        print("[Service] Successfully started as Android Foreground Service!")
+        if sdk_int >= 34:
+            try:
+                ServiceInfo = autoclass("android.content.pm.ServiceInfo")
+                # FOREGROUND_SERVICE_TYPE_DATA_SYNC = 1
+                type_flag = getattr(ServiceInfo, "FOREGROUND_SERVICE_TYPE_DATA_SYNC", 1)
+                service.startForeground(9999, notification, int(type_flag))
+                print("[Service] Successfully started as Android 14+ Foreground Service with DATA_SYNC!")
+            except Exception as e34:
+                print(f"[Service] Android 14 type start notice ({e34}), falling back to standard startForeground")
+                service.startForeground(9999, notification)
+        else:
+            service.startForeground(9999, notification)
+            print("[Service] Successfully started as Android Foreground Service!")
     except Exception as e:
         print(f"[Service] startForeground notice: {e}")
 
 
-def acquire_wakelock():
-    """Acquires CPU WakeLock so Android does not sleep the processor when screen turns off."""
+def acquire_locks():
+    """Acquires CPU WakeLock and WifiLock so Android does not sleep the CPU or drop Wi-Fi when screen turns off."""
+    locks = []
     if not ANDROID_AVAILABLE:
-        return None
+        return locks
     try:
         PythonService = autoclass("org.kivy.android.PythonService")
         service = PythonService.mService
         if not service:
-            return None
+            return locks
         Context = autoclass("android.content.Context")
         PowerManager = autoclass("android.os.PowerManager")
         pm = service.getSystemService(Context.POWER_SERVICE)
@@ -95,24 +109,45 @@ def acquire_wakelock():
             # PARTIAL_WAKE_LOCK = 1
             wl = pm.newWakeLock(1, "UniversalDownloader:BackgroundServiceLock")
             wl.acquire()
+            locks.append(wl)
             print("[Service] Acquired PARTIAL_WAKE_LOCK for background service.")
-            return wl
+
+        WifiManager = autoclass("android.net.wifi.WifiManager")
+        wm = service.getSystemService(Context.WIFI_SERVICE)
+        if wm:
+            # WIFI_MODE_FULL_HIGH_PERF = 3
+            wifi_lock = wm.createWifiLock(3, "UniversalDownloader:ServiceWifiLock")
+            wifi_lock.acquire()
+            locks.append(wifi_lock)
+            print("[Service] Acquired WifiLock for background service.")
     except Exception as e:
-        print(f"[Service] WakeLock notice: {e}")
-    return None
+        print(f"[Service] Locks acquire notice: {e}")
+    return locks
+
+
+def start_engine_server():
+    """Runs the internal HTTP server on 127.0.0.1:5824 inside the Foreground Service."""
+    try:
+        from app import run_server
+        srv_thread = threading.Thread(target=lambda: run_server(host="127.0.0.1", port=5824), daemon=True)
+        srv_thread.start()
+        print("[Service] Background HTTP media engine running on 127.0.0.1:5824")
+    except Exception as e:
+        print(f"[Service] Engine server launch notice: {e}")
 
 
 def main():
-    print("Android Downloader Background Service Started.")
+    print("Android Downloader Background Service Starting...")
     promote_to_foreground()
-    wl = acquire_wakelock()
+    locks = acquire_locks()
+    start_engine_server()
     try:
         while True:
-            time.sleep(5)
+            time.sleep(10)
     finally:
-        if wl:
+        for lock in locks:
             try:
-                wl.release()
+                lock.release()
             except Exception:
                 pass
 

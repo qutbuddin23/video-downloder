@@ -25,7 +25,9 @@ from core.paths import (
     get_vault_dir,
     get_temp_playback_dir,
     get_default_download_dir,
-    is_directory_writable
+    is_directory_writable,
+    has_all_files_access,
+    request_all_files_access
 )
 from core.database import Database
 from core.detector import MediaDetector
@@ -302,6 +304,22 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
 
         if path == "/api/storage/stats":
             self.send_json(storage.get_storage_stats())
+            return
+
+        if path == "/api/storage/browse":
+            target = query.get("path", [""])[0]
+            data = storage.browse_directories(target)
+            data["has_all_files_access"] = has_all_files_access()
+            self.send_json(data)
+            return
+
+        if path == "/api/storage/permission-status":
+            can_draw = overlay_assistant.can_draw_overlays() if overlay_assistant else True
+            self.send_json({
+                "all_files_access": has_all_files_access(),
+                "overlay_permission": can_draw,
+                "is_android": is_running_on_android()
+            })
             return
 
         if path == "/api/stream-proxy":
@@ -589,6 +607,18 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
         if path == "/api/storage/clean-temp":
             freed = storage.clean_temp_files()
             self.send_json({"success": True, "freed_bytes": freed, "freed_str": format_bytes(freed)})
+            return
+
+        if path == "/api/storage/create-dir":
+            parent = body.get("parent_path", "").strip()
+            name = body.get("name", "").strip()
+            res = storage.create_directory(parent, name)
+            self.send_json(res, status=200 if res.get("success") else 400)
+            return
+
+        if path == "/api/storage/request-full-access":
+            req_res = request_all_files_access()
+            self.send_json({"success": req_res})
             return
 
         if path == "/api/overlay/toggle":

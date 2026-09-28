@@ -684,3 +684,93 @@ body {
     0%, 100% { transform: scale(1); }
     50% { transform: scale(1.2); }
 }
+
+/* Folder Picker Modal */
+.folder-picker-card {
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.folder-breadcrumb-bar {
+    background: rgba(15, 23, 42, 0.7);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.folder-shortcuts-bar {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+}
+
+.folder-shortcut-pill {
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    color: #C7D2FE;
+    padding: 4px 10px;
+    border-radius: 16px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.15s;
+}
+
+.folder-shortcut-pill:hover, .folder-shortcut-pill:active {
+    background: rgba(99, 102, 241, 0.3);
+    color: #FFFFFF;
+}
+
+.folder-list-container {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 280px;
+    background: rgba(15, 23, 42, 0.5);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.folder-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.folder-row:hover, .folder-row:active {
+    background: rgba(99, 102, 241, 0.18);
+}
+
+.folder-row.is-up {
+    color: #94A3B8;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.folder-row-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #F8FAFC;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}

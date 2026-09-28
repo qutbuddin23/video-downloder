@@ -7,9 +7,9 @@ and provides file cleanup and duplicate detection utilities.
 import os
 import shutil
 import hashlib
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Optional
 from core.database import Database
-from core.paths import get_vault_dir, get_default_download_dir, get_base_data_dir
+from core.paths import get_vault_dir, get_default_download_dir, get_base_data_dir, is_directory_writable, is_android
 
 def format_bytes(bytes_num: int) -> str:
     """Format bytes into readable string (KB, MB, GB)."""
@@ -134,3 +134,94 @@ class StorageManager:
                     except (OSError, PermissionError):
                         pass
         return sorted(large_files, key=lambda x: x["size"], reverse=True)
+
+    def get_shortcuts(self) -> List[Dict[str, str]]:
+        """Returns standard system folder shortcuts for quick 1-tap navigation."""
+        shortcuts = []
+        if is_android():
+            candidates = [
+                {"label": "Downloads", "path": "/storage/emulated/0/Download", "icon": "📥"},
+                {"label": "Movies", "path": "/storage/emulated/0/Movies", "icon": "🎬"},
+                {"label": "DCIM / Camera", "path": "/storage/emulated/0/DCIM", "icon": "📷"},
+                {"label": "Documents", "path": "/storage/emulated/0/Documents", "icon": "📄"},
+                {"label": "Music", "path": "/storage/emulated/0/Music", "icon": "🎵"},
+                {"label": "App Private Storage", "path": os.path.join(get_base_data_dir(), "downloads"), "icon": "🔒"}
+            ]
+        else:
+            home = os.path.expanduser("~")
+            candidates = [
+                {"label": "Downloads", "path": os.path.join(home, "Downloads"), "icon": "📥"},
+                {"label": "Videos", "path": os.path.join(home, "Videos"), "icon": "🎬"},
+                {"label": "Desktop", "path": os.path.join(home, "Desktop"), "icon": "🖥️"},
+                {"label": "Documents", "path": os.path.join(home, "Documents"), "icon": "📄"},
+                {"label": "App Data", "path": os.path.join(get_base_data_dir(), "downloads"), "icon": "🔒"}
+            ]
+        for c in candidates:
+            p = c["path"]
+            if os.path.exists(p) or is_directory_writable(p):
+                shortcuts.append({
+                    "label": c["label"],
+                    "path": p,
+                    "icon": c["icon"],
+                    "is_writable": is_directory_writable(p)
+                })
+        return shortcuts
+
+    def browse_directories(self, base_path: str = "") -> Dict[str, Any]:
+        """Lists subdirectories inside base_path for visual directory selection."""
+        target_path = (base_path or "").strip()
+        if not target_path or not os.path.exists(target_path):
+            target_path = self.download_folder
+            if not os.path.exists(target_path):
+                target_path = get_default_download_dir()
+                if not os.path.exists(target_path):
+                    target_path = os.path.expanduser("~")
+
+        target_path = os.path.abspath(target_path)
+        parent_path = os.path.dirname(target_path)
+        if parent_path == target_path:
+            parent_path = None
+
+        subdirs = []
+        try:
+            entries = sorted(os.listdir(target_path), key=lambda x: x.lower())
+            for item in entries:
+                if item.startswith(".") or item in ("Android", "System Volume Information", "$RECYCLE.BIN"):
+                    continue
+                item_full = os.path.join(target_path, item)
+                if os.path.isdir(item_full):
+                    subdirs.append({
+                        "name": item,
+                        "path": item_full,
+                        "is_writable": is_directory_writable(item_full)
+                    })
+        except (PermissionError, OSError):
+            pass
+
+        return {
+            "current_path": target_path,
+            "parent_path": parent_path,
+            "is_writable": is_directory_writable(target_path),
+            "directories": subdirs,
+            "shortcuts": self.get_shortcuts()
+        }
+
+    def create_directory(self, parent_path: str, dir_name: str) -> Dict[str, Any]:
+        """Creates a new folder under parent_path and checks writability."""
+        if not parent_path or not os.path.isdir(parent_path):
+            return {"success": False, "error": "Invalid parent directory"}
+        clean_name = dir_name.strip().replace("/", "_").replace("\\", "_").strip(" ._")
+        if not clean_name:
+            return {"success": False, "error": "Folder name cannot be empty"}
+        new_path = os.path.join(parent_path, clean_name)
+        try:
+            os.makedirs(new_path, exist_ok=True)
+            writable = is_directory_writable(new_path)
+            return {
+                "success": True,
+                "path": new_path,
+                "name": clean_name,
+                "is_writable": writable
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

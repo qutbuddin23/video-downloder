@@ -70,7 +70,7 @@ try:
             Clock.schedule_once(_set, 0)
 
         def request_app_permissions(self, *args):
-            """Show native Android runtime permission prompts (storage & notifications)."""
+            """Show native Android runtime permission prompts (storage, battery optimization, notifications)."""
             try:
                 from android.permissions import request_permissions
                 from android.runnable import run_on_ui_thread
@@ -88,6 +88,30 @@ try:
                         request_permissions(perms)
                     except Exception as pe:
                         print(f"[Android Launcher] Permission prompt notice: {pe}")
+
+                    # Request Battery Optimization exemption on Android 6.0+ (API 23+)
+                    # so screen-off background downloads are never killed by OEM battery savers
+                    try:
+                        from jnius import autoclass
+                        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                        activity = PythonActivity.mActivity
+                        if activity:
+                            Context = autoclass("android.content.Context")
+                            PowerManager = autoclass("android.os.PowerManager")
+                            Intent = autoclass("android.content.Intent")
+                            Uri = autoclass("android.net.Uri")
+                            Settings = autoclass("android.provider.Settings")
+                            pm = activity.getSystemService(Context.POWER_SERVICE)
+                            pkg = activity.getPackageName()
+                            if pm and hasattr(pm, "isIgnoringBatteryOptimizations"):
+                                if not pm.isIgnoringBatteryOptimizations(pkg):
+                                    intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                    intent.setData(Uri.parse(f"package:{pkg}"))
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    activity.startActivity(intent)
+                                    print("[Android Launcher] Requested ignore battery optimizations.")
+                    except Exception as be:
+                        print(f"[Android Launcher] Battery optimization request notice: {be}")
                 _do_ask()
             except Exception as e:
                 print(f"[Android Launcher] Permissions module notice: {e}")
@@ -106,7 +130,16 @@ try:
                 print(f"[Android Launcher] ServiceDownloader notice: {se}")
 
         def _start_server_thread(self):
-            """Runs the internal HTTP server on 127.0.0.1:5824 with full exception capture."""
+            """Runs internal HTTP server on 127.0.0.1:5824 if not already running via Foreground Service."""
+            time.sleep(0.5)
+            # Check if port 5824 is already running (e.g. launched by service.py)
+            try:
+                with socket.create_connection(("127.0.0.1", 5824), timeout=0.5):
+                    print("[Android Launcher] HTTP server already active on 127.0.0.1:5824 (via Foreground Service).")
+                    return
+            except Exception:
+                pass
+
             try:
                 from app import run_server
                 run_server(host="127.0.0.1", port=5824)

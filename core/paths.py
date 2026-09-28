@@ -163,40 +163,7 @@ def is_directory_writable(path: str) -> bool:
 def get_default_download_dir() -> str:
     """Return default public downloads directory visible in Gallery and File Manager."""
     if is_android():
-        # 1. Primary Android location: Context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-        # On Android 10, 11, 12, 13, 14, 15, getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-        # is ALWAYS fully writable without requiring MANAGE_EXTERNAL_STORAGE permission,
-        # AND files scanned with MediaScannerConnection immediately show up in the Gallery & Downloads!
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            activity = PythonActivity.mActivity
-            if activity:
-                Environment = autoclass("android.os.Environment")
-                ext_dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                if ext_dir:
-                    ext_path = ext_dir.getAbsolutePath()
-                    if is_directory_writable(ext_path):
-                        print(f"[Paths] Using safe external files dir: {ext_path}")
-                        return ext_path
-        except Exception as e:
-            print(f"[Paths] getExternalFilesDir notice: {e}")
-
-        # 2. Try PyJNIus Android Environment.getExternalStoragePublicDirectory
-        try:
-            from jnius import autoclass
-            Environment = autoclass("android.os.Environment")
-            dl_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if dl_dir:
-                public_path = dl_dir.getAbsolutePath()
-                target_path = os.path.join(public_path, "UniversalVideos")
-                if is_directory_writable(target_path):
-                    print(f"[Paths] Using public Android download path: {target_path}")
-                    return target_path
-        except Exception as e:
-            print(f"[Paths] PyJNIus Environment download path check: {e}")
-
-        # 3. Try standard external shared download directories
+        # 1. Primary Android public shared directories (visible in Files, Gallery, VLC)
         candidates = [
             "/storage/emulated/0/Download/UniversalVideos",
             "/storage/emulated/0/Download",
@@ -207,8 +174,38 @@ def get_default_download_dir() -> str:
         ]
         for candidate in candidates:
             if is_directory_writable(candidate):
-                print(f"[Paths] Using candidate Android download path: {candidate}")
+                print(f"[Paths] Using public Android download path: {candidate}")
                 return candidate
+
+        # 2. Try PyJNIus Android Environment.getExternalStoragePublicDirectory
+        try:
+            from jnius import autoclass
+            Environment = autoclass("android.os.Environment")
+            dl_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if dl_dir:
+                public_path = dl_dir.getAbsolutePath()
+                target_path = os.path.join(public_path, "UniversalVideos")
+                if is_directory_writable(target_path):
+                    print(f"[Paths] Using PyJNIus public Android download path: {target_path}")
+                    return target_path
+        except Exception as e:
+            print(f"[Paths] PyJNIus Environment download path check: {e}")
+
+        # 3. Context.getExternalFilesDir (App external files)
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            if activity:
+                Environment = autoclass("android.os.Environment")
+                ext_dir = activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                if ext_dir:
+                    ext_path = ext_dir.getAbsolutePath()
+                    if is_directory_writable(ext_path):
+                        print(f"[Paths] Using fallback external files dir: {ext_path}")
+                        return ext_path
+        except Exception as e:
+            print(f"[Paths] getExternalFilesDir notice: {e}")
 
         # 4. Safe internal fallback if all external attempts fail
         safe_fallback = os.path.join(get_base_data_dir(), "downloads")
@@ -223,4 +220,50 @@ def get_default_download_dir() -> str:
     fallback = os.path.join(get_base_data_dir(), "downloads")
     os.makedirs(fallback, exist_ok=True)
     return fallback
+
+
+def has_all_files_access() -> bool:
+    """Checks if Android 11+ app has All Files Access (MANAGE_EXTERNAL_STORAGE)."""
+    if not is_android():
+        return True
+    try:
+        from jnius import autoclass
+        Environment = autoclass("android.os.Environment")
+        if hasattr(Environment, "isExternalStorageManager"):
+            return bool(Environment.isExternalStorageManager())
+    except Exception as e:
+        print(f"[Paths] isExternalStorageManager check: {e}")
+    return True
+
+
+def request_all_files_access() -> bool:
+    """Opens Android Settings to grant All Files Access (MANAGE_EXTERNAL_STORAGE)."""
+    if not is_android():
+        return True
+    try:
+        from jnius import autoclass
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def _req():
+            try:
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                if activity:
+                    Intent = autoclass("android.content.Intent")
+                    Uri = autoclass("android.net.Uri")
+                    Settings = autoclass("android.provider.Settings")
+                    pkg = str(activity.getPackageName())
+                    intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    intent.setData(Uri.parse(f"package:{pkg}"))
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    activity.startActivity(intent)
+            except Exception as e:
+                print(f"[StorageAccess] Error: {e}")
+        _req()
+        return True
+    except Exception as e:
+        print(f"[StorageAccess] request notice: {e}")
+        return False
+
 

@@ -252,16 +252,23 @@
                         </div>
                     </div>
 
-                    <div style="font-size:11px; font-weight:700; color:#CBD5E1; margin-bottom:6px;">QUICK STORAGE PRESETS:</div>
+                    <!-- Prominent Visual Folder Selector Button (No manual typing required) -->
+                    <button id="btn-open-folder-picker" class="btn btn-primary" onclick="openFolderPicker()" style="width:100%; margin-bottom:14px; font-weight:700; padding:12px; font-size:14px; display:flex; align-items:center; justify-content:center; gap:8px;">
+                        📂 Select Folder / Browse Folders
+                    </button>
+
+                    <div style="font-size:11px; font-weight:700; color:#CBD5E1; margin-bottom:6px;">QUICK 1-TAP STORAGE PRESETS:</div>
                     <div id="preset-folders-container" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
                         <!-- Injected by JS -->
                     </div>
 
-                    <div style="font-size:11px; font-weight:700; color:#CBD5E1; margin-bottom:6px;">CUSTOM SAVE DIRECTORY:</div>
-                    <div style="display:flex; gap:8px;">
-                        <input type="text" id="input-custom-download-dir" class="url-input-box" placeholder="Enter custom folder path..." style="flex:1; font-size:12px;" />
-                        <button id="btn-save-download-dir" class="btn btn-primary btn-sm" onclick="saveCustomDownloadDir()" style="font-weight:700; white-space:nowrap; padding:0 14px;">
-                            💾 Save Location
+                    <!-- Android All Files Access Helper if needed -->
+                    <div id="storage-perm-banner" style="display:none; margin-top:8px; padding:10px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); border-radius:8px;">
+                        <div style="font-size:11px; color:#FDE68A; margin-bottom:6px; line-height:1.4;">
+                            ⚠️ Need to save anywhere on device storage (Android 11+):
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="requestAllFilesAccess()" style="width:100%; font-weight:600; color:#FDE68A;">
+                            🔓 Grant All Files Access Permission
                         </button>
                     </div>
                 </div>
@@ -389,6 +396,46 @@
                     </button>
                     <button class="btn btn-secondary" onclick="closeOverlayModal()" style="padding:8px;">
                         Cancel
+                    </button>
+                </div>
+            </div>
+        <!-- Interactive Visual Folder Picker Modal -->
+        <div id="folder-picker-modal" class="modal-overlay">
+            <div class="modal-content folder-picker-card" style="max-width:440px; padding:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:20px;">📁</span>
+                        <div>
+                            <div style="font-size:14px; font-weight:800; color:#F8FAFC;">Select Download Folder</div>
+                            <div style="font-size:11px; color:#94A3B8;">Tap any folder to enter it</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" onclick="closeFolderPicker()" style="padding:4px 8px;">✕</button>
+                </div>
+
+                <!-- Breadcrumb Path Bar -->
+                <div class="folder-breadcrumb-bar">
+                    <span style="color:#818CF8; font-size:12px;">📍</span>
+                    <span id="folder-picker-current-path" style="font-size:11px; color:#A5B4FC; word-break:break-all; font-weight:600;">/</span>
+                </div>
+
+                <!-- Quick Location Shortcuts -->
+                <div id="folder-picker-shortcuts" class="folder-shortcuts-bar">
+                    <!-- Populated by JS -->
+                </div>
+
+                <!-- Directory List -->
+                <div id="folder-picker-list" class="folder-list-container">
+                    <div style="text-align:center; padding:20px; color:#94A3B8; font-size:12px;">Loading folders...</div>
+                </div>
+
+                <!-- Action Controls: + New Folder & Select This Folder -->
+                <div style="display:flex; gap:8px; margin-top:12px;">
+                    <button class="btn btn-secondary btn-sm" onclick="promptCreateNewFolder()" style="font-weight:600; white-space:nowrap;">
+                        ➕ New Folder
+                    </button>
+                    <button id="btn-confirm-select-folder" class="btn btn-primary btn-sm" onclick="confirmSelectFolder()" style="flex:1; font-weight:700; white-space:nowrap;">
+                        ✅ Select This Folder
                     </button>
                 </div>
             </div>

@@ -564,7 +564,12 @@ class MediaDetector:
 
         # Determine Page Title
         title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip() if title_match else "Detected Web Video"
+        title = title_match.group(1).strip() if title_match else ""
+        if not title or title.lower() in ["yamyhub", "player", "video", "untitled", "yamyhub player"]:
+            name_m = re.search(r'["\'](?:name|headline)["\']\s*:\s*["\']([^"\'\n]+)["\']', clean_html)
+            if name_m:
+                title = name_m.group(1).strip()
+        title = title or "Detected Web Video"
 
         # Determine Thumbnail
         thumbnail = ""
@@ -575,6 +580,12 @@ class MediaDetector:
             cand_thumb = urllib.parse.urljoin(url, og_img.group(1))
             if not cand_thumb.lower().endswith(".svg"):
                 thumbnail = cand_thumb
+        if not thumbnail:
+            thumb_m = re.search(r'["\']thumbnailUrl["\']\s*:\s*["\']([^"\'\s]+)["\']', clean_html)
+            if thumb_m:
+                cand_thumb = urllib.parse.urljoin(url, thumb_m.group(1).strip())
+                if not cand_thumb.lower().endswith(".svg"):
+                    thumbnail = cand_thumb
 
         detected_urls = set()
 
@@ -603,13 +614,32 @@ class MediaDetector:
                 if is_valid_media_url(cand):
                     detected_urls.add(cand)
 
-        # 4. Scan iframes for embedded players (Playerjs, embed players, etc.)
-        for ifr_m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', clean_html, re.IGNORECASE):
-            ifr_raw = ifr_m.group(1).strip()
-            ifr_url = urllib.parse.urljoin(url, ifr_raw)
+        # 4. Embedded players, iframes, and JSON-LD video URLs
+        candidate_player_urls = set()
+
+        # 4a. Iframes (src, data-src, data-url, data-lazy-src)
+        for ifr_m in re.finditer(r'<iframe\s+[^>]*(?:src|data-src|data-url|data-lazy-src)=["\']([^"\']+)["\']', clean_html, re.IGNORECASE):
+            candidate_player_urls.add(urllib.parse.urljoin(url, ifr_m.group(1).strip()))
+
+        # 4b. JSON-LD & JS video/player references (contentUrl, embedUrl, player_url, embed_url)
+        for emb_m in re.finditer(r'["\'](?:contentUrl|embedUrl|player_url|embed_url|playerUrl|embed_player)["\']\s*:\s*["\']([^"\'\s]+)["\']', clean_html, re.IGNORECASE):
+            candidate_player_urls.add(urllib.parse.urljoin(url, emb_m.group(1).strip()))
+
+        # 4c. Process candidate player URLs (depth 1 & 2)
+        for ifr_url in list(candidate_player_urls):
             ifr_low = ifr_url.lower()
             if any(ad in ifr_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick", "googleads", "doubleclick"]):
                 continue
+            if any(ifr_low.split("?")[0].endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".css", ".js"]):
+                continue
+
+            # If it's directly a video stream format
+            if any(ifr_low.split("?")[0].endswith(ext) for ext in [".mp4", ".m3u8", ".mpd", ".webm", ".mkv"]):
+                if is_valid_media_url(ifr_url):
+                    detected_urls.add(ifr_url)
+                continue
+
+            # Otherwise, fetch the embedded player page
             try:
                 ifr_resp = requests.get(ifr_url, headers={**self.DEFAULT_HEADERS, "Referer": url}, cookies=cookies or None, timeout=8)
                 if ifr_resp.ok:
@@ -620,12 +650,24 @@ class MediaDetector:
                             sub_m = re.search(r'(?:\[([^\]]+)\])?(https?://[^\s,"\'<>]+)', sub_part.strip())
                             if sub_m and is_valid_media_url(sub_m.group(2)):
                                 detected_urls.add(sub_m.group(2))
-                    # Also scan iframes for direct media streams
+                    # Scan for direct media streams
                     for sub_m in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', ifr_html, re.IGNORECASE):
                         if is_valid_media_url(sub_m):
                             detected_urls.add(sub_m)
+                    # Scan for nested iframes (depth 2) e.g. nmcorp, doodstream, streamtape, mixdrop
+                    for nested_m in re.finditer(r'<iframe\s+[^>]*(?:src|data-src)=["\']([^"\']+)["\']', ifr_html, re.IGNORECASE):
+                        nested_raw = nested_m.group(1).strip()
+                        nested_url = urllib.parse.urljoin(ifr_url, nested_raw)
+                        nested_low = nested_url.lower()
+                        if not any(ad in nested_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick"]):
+                            if is_valid_media_url(nested_url):
+                                detected_urls.add(nested_url)
+                    # If this player HTML contained an embed/player URL and nothing else was matched, add the player URL
+                    if not detected_urls and ("player" in ifr_low or "embed" in ifr_low or "video" in ifr_low):
+                        detected_urls.add(ifr_url)
             except Exception:
-                pass
+                if "player" in ifr_low or "embed" in ifr_low or "video" in ifr_low:
+                    detected_urls.add(ifr_url)
 
         # 5. Check Playerjs syntax directly in main HTML
         for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', clean_html):

@@ -80,6 +80,15 @@ def test_android_notification_helper_graceful():
     AndroidNotificationHelper.cancel(1234)
 
 
+def test_android_wakelock_helper_graceful():
+    from core.downloader import AndroidWakeLockHelper
+    # Test acquire and release without crashing on desktop platforms
+    AndroidWakeLockHelper.acquire()
+    assert AndroidWakeLockHelper._active_count >= 1
+    AndroidWakeLockHelper.release()
+    assert AndroidWakeLockHelper._active_count == 0
+
+
 def test_direct_http_fallback_to_ytdlp(temp_db):
     from unittest.mock import patch, MagicMock
     from core.downloader import DownloadTask

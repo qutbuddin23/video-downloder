@@ -37,11 +37,12 @@ try:
             return root
 
         def on_start(self):
-            # 1. On Android, bind back button and prompt for permissions
+            # 1. On Android, bind back button, start background service, and prompt for permissions
             if platform == "android":
                 Window.bind(on_keyboard=self.on_android_back)
                 # Show runtime permission dialogs early so user can grant them
                 Clock.schedule_once(self.request_app_permissions, 0.5)
+                Clock.schedule_once(self.start_background_service, 1.0)
 
             # 2. Start HTTP server in a managed background thread
             srv_thread = threading.Thread(target=self._start_server_thread, daemon=True)
@@ -90,6 +91,19 @@ try:
                 _do_ask()
             except Exception as e:
                 print(f"[Android Launcher] Permissions module notice: {e}")
+
+        def start_background_service(self, *args):
+            """Starts the Android Background Service so downloads continue with screen off or in background."""
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                activity = PythonActivity.mActivity
+                if activity:
+                    service = autoclass("org.universal.universaldownloader.ServiceDownloader")
+                    service.start(activity, "")
+                    print("[Android Launcher] Started Android Background ServiceDownloader!")
+            except Exception as se:
+                print(f"[Android Launcher] ServiceDownloader notice: {se}")
 
         def _start_server_thread(self):
             """Runs the internal HTTP server on 127.0.0.1:5824 with full exception capture."""

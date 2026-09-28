@@ -323,6 +323,68 @@ class AndroidNotificationHelper:
             print(f"[Notifications] cancel notice: {e}")
 
 
+class AndroidWakeLockHelper:
+    """Keeps Android CPU awake and Wi-Fi chip active during background and screen-off downloads."""
+    _wake_lock = None
+    _wifi_lock = None
+    _active_count = 0
+    _lock = threading.Lock()
+
+    @classmethod
+    def _get_context(cls):
+        return AndroidNotificationHelper._get_context()
+
+    @classmethod
+    def acquire(cls):
+        with cls._lock:
+            cls._active_count += 1
+            if cls._active_count > 1 and cls._wake_lock:
+                return
+            try:
+                context = cls._get_context()
+                if not context:
+                    return
+                from jnius import autoclass
+                Context = autoclass("android.content.Context")
+                PowerManager = autoclass("android.os.PowerManager")
+                pm = context.getSystemService(Context.POWER_SERVICE)
+                if pm:
+                    # PARTIAL_WAKE_LOCK = 1: keeps CPU running when screen is off or device is locked
+                    cls._wake_lock = pm.newWakeLock(1, "UniversalDownloader:DownloadWakeLock")
+                    cls._wake_lock.acquire()
+                    print("[WakeLock] Acquired PARTIAL_WAKE_LOCK for background download.")
+
+                WifiManager = autoclass("android.net.wifi.WifiManager")
+                wm = context.getSystemService(Context.WIFI_SERVICE)
+                if wm:
+                    # WIFI_MODE_FULL_HIGH_PERF = 3
+                    cls._wifi_lock = wm.createWifiLock(3, "UniversalDownloader:WifiLock")
+                    cls._wifi_lock.acquire()
+                    print("[WifiLock] Acquired WifiLock for high-speed download.")
+            except Exception as e:
+                print(f"[WakeLock] acquire notice: {e}")
+
+    @classmethod
+    def release(cls):
+        with cls._lock:
+            cls._active_count = max(0, cls._active_count - 1)
+            if cls._active_count == 0:
+                if cls._wake_lock:
+                    try:
+                        cls._wake_lock.release()
+                        print("[WakeLock] Released PARTIAL_WAKE_LOCK.")
+                    except Exception:
+                        pass
+                    cls._wake_lock = None
+                if cls._wifi_lock:
+                    try:
+                        cls._wifi_lock.release()
+                        print("[WifiLock] Released WifiLock.")
+                    except Exception:
+                        pass
+                    cls._wifi_lock = None
+
+
 def open_video_in_external_player(file_path: str) -> bool:
     """Launches the downloaded file in the phone's native app (player, installer, viewer)."""
     if not file_path or not os.path.exists(file_path):
@@ -444,6 +506,7 @@ class DownloadTask:
         AndroidNotificationHelper.cancel(self.notification_id)
 
     def _run(self):
+        AndroidWakeLockHelper.acquire()
         try:
             if self.is_paused or self.is_cancelled:
                 return
@@ -513,7 +576,22 @@ class DownloadTask:
                         raise direct_err
 
             # Strategy 5: Resilient yt-dlp download for all platforms (YouTube, Twitter, TikTok, Tube sites, etc.)
-            self._download_via_ytdlp(override_url=self.url)
+            try:
+                self._download_via_ytdlp(override_url=self.url)
+            except Exception as ytdl_err:
+                if self.direct_url and self.direct_url != self.url and not (self.is_cancelled or self.is_paused):
+                    print(f"[Downloader] Primary URL error ({ytdl_err}), trying direct_url: {self.direct_url}")
+                    try:
+                        self._download_via_ytdlp(override_url=self.direct_url)
+                        return
+                    except Exception:
+                        pass
+                    try:
+                        self._download_direct_http(custom_url=self.direct_url)
+                        return
+                    except Exception:
+                        pass
+                raise ytdl_err
 
         except Exception as e:
             try:
@@ -535,6 +613,8 @@ class DownloadTask:
                     )
             except Exception:
                 pass
+        finally:
+            AndroidWakeLockHelper.release()
 
     def _download_mega(self):
         """Executes native streaming download and AES-CTR decryption for MEGA.nz files and folder items."""
@@ -603,8 +683,8 @@ class DownloadTask:
             scan_file_to_android_gallery(final_path)
             scan_media_file(final_path)
 
-    def _download_direct_http(self, custom_referer: str = ""):
-        target_url = self.direct_url or self.url
+    def _download_direct_http(self, custom_referer: str = "", custom_url: Optional[str] = None):
+        target_url = custom_url or self.direct_url or self.url
         if not target_url:
             raise ValueError("No download URL provided.")
 

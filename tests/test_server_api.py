@@ -187,5 +187,32 @@ def test_overlay_url_detection():
     assert detect_video_url("random text with no url") is None
 
 
+def test_settings_api_get_and_post():
+    import tempfile
+    import shutil
+    # 1. GET /api/settings
+    status, raw = make_request("/api/settings")
+    assert status == 200
+    data = json.loads(raw)
+    assert "download_folder" in data
+    assert "is_writable" in data
+    assert "preset_folders" in data
+    assert isinstance(data["preset_folders"], list)
+
+    # 2. POST /api/settings with custom folder
+    temp_dir = tempfile.mkdtemp()
+    try:
+        custom_folder = os.path.join(temp_dir, "CustomSaveDir")
+        status, raw_post = make_request("/api/settings", method="POST", data={"download_folder": custom_folder})
+        assert status == 200
+        res = json.loads(raw_post)
+        assert res["success"] is True
+        assert res["settings"]["download_folder"] == os.path.abspath(custom_folder)
+        assert res["settings"]["is_writable"] is True
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+
 
 

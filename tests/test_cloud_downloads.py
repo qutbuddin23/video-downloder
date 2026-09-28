@@ -2,6 +2,7 @@
 Comprehensive tests for Cloud Downloads (MEGA, TeraBox) and Direct File Sniffing.
 """
 
+import os
 import json
 import base64
 from unittest.mock import patch, MagicMock
@@ -105,3 +106,48 @@ def test_is_valid_media_url_includes_archives_and_cloud():
     assert is_valid_media_url("https://example.com/favicon.ico") is False
     assert is_valid_media_url("https://example.com/banner.png") is False
     assert is_valid_media_url("https://example.com/vector.svg") is False
+
+
+def test_mega_folder_url_parsing_and_detection():
+    from core.mega import is_mega_folder_url, parse_mega_folder_url, is_mega_url
+
+    url_folder = "https://mega.nz/folder/lpxxAYJb#PF--57u8eeVy8oGYXHS53A"
+    assert is_mega_url(url_folder) is True
+    assert is_mega_folder_url(url_folder) is True
+
+    f_id, f_key = parse_mega_folder_url(url_folder)
+    assert f_id == "lpxxAYJb"
+    assert f_key == "PF--57u8eeVy8oGYXHS53A"
+
+    url_classic = "https://mega.nz/#F!lpxxAYJb!PF--57u8eeVy8oGYXHS53A"
+    assert is_mega_folder_url(url_classic) is True
+    f_id2, f_key2 = parse_mega_folder_url(url_classic)
+    assert f_id2 == "lpxxAYJb"
+    assert f_key2 == "PF--57u8eeVy8oGYXHS53A"
+
+
+def test_download_folder_settings_and_manager():
+    import tempfile
+    import shutil
+    from core.database import Database
+    from core.downloader import DownloadManager
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        db = Database(db_path=f"{temp_dir}/test.db")
+        dm = DownloadManager(db)
+
+        # Create new subfolder
+        new_loc = os.path.abspath(os.path.join(temp_dir, "CustomDownloads"))
+        success, res = dm.set_download_folder(new_loc)
+        assert success is True
+        assert res == new_loc
+        assert dm.download_folder == new_loc
+        assert db.get_setting("download_folder") == new_loc
+
+        # Reject empty
+        success_bad, _ = dm.set_download_folder("")
+        assert success_bad is False
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+

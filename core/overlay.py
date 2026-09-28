@@ -20,7 +20,7 @@ except (ImportError, ModuleNotFoundError):
     TKINTER_AVAILABLE = False
 
 VIDEO_URL_PATTERN = re.compile(
-    r'(https?://[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov)))',
+    r'(https?://[^\s<>"\'`]+)',
     re.IGNORECASE
 )
 
@@ -199,9 +199,9 @@ class DesktopFloatingOverlay:
                     clip_text = self.root.clipboard_get()
                     if clip_text and clip_text != self.last_clipboard:
                         self.last_clipboard = clip_text
-                        match = VIDEO_URL_PATTERN.search(clip_text)
-                        if match:
-                            self.detected_url = match.group(1)
+                        found = detect_video_url(clip_text)
+                        if found:
+                            self.detected_url = found
                             self._set_badge(True)
             except Exception:
                 pass

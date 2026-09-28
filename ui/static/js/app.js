@@ -17,7 +17,7 @@ let detectedVideoUrl = null;
 let lastDetectedVideoUrl = null;
 let overlayPollInterval = null;
 let isCheckingClipboard = false;
-const VIDEO_URL_REGEX = /(https?:\/\/[^\s]+(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|fb\.watch|twitter\.com|x\.com|vimeo\.com|dailymotion\.com|reddit\.com|mega\.nz|mega\.io|mega\.co\.nz|terabox|1024tera|mirrobox|nephobox|freeterabox|4funbox|[^\s]+\.(?:mp4|m3u8|webm|mpd|mov|mkv|avi|flv|mp3|m4a|aac|flac|wav|zip|rar|7z|tar|gz|apk|xapk|pdf|doc|docx|xls|xlsx|ppt|pptx|iso|dmg|exe)))/i;
+const VIDEO_URL_REGEX = /(https?:\/\/[^\s<>"'`]+)/i;
 
 const DEFAULT_VIDEO_THUMB = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%236366F1"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h16V6H4zm6 2.5l6 3.5-6 3.5v-7z"/></svg>';
 
@@ -248,12 +248,29 @@ function renderVideoPreview(data) {
     const title = document.getElementById('preview-title');
     const meta = document.getElementById('preview-meta');
     const formatsContainer = document.getElementById('formats-list');
+    const downloadAllBtn = document.getElementById('btn-download-all');
+    const downloadAllCount = document.getElementById('download-all-count');
 
     thumb.dataset.origSrc = data.thumbnail || '';
     thumb.dataset.proxied = '';
     thumb.src = getSafeThumbnailUrl(data.thumbnail);
     title.textContent = data.title;
-    meta.textContent = `Duration: ${data.duration_str} • ${data.detected_count} Streams Found`;
+
+    if (data.is_folder) {
+        meta.textContent = `📁 Cloud Folder • ${data.detected_count} Files Available`;
+    } else {
+        meta.textContent = `Duration: ${data.duration_str} • ${data.detected_count} Streams Found`;
+    }
+
+    // Handle Download All Files button for folders / multi-file sets
+    if (downloadAllBtn) {
+        if (data.is_folder || (data.formats && data.formats.length > 1 && data.formats.some(f => f.filename))) {
+            downloadAllBtn.style.display = 'block';
+            if (downloadAllCount) downloadAllCount.textContent = data.formats.length;
+        } else {
+            downloadAllBtn.style.display = 'none';
+        }
+    }
 
     formatsContainer.innerHTML = '';
     selectedFormat = data.formats[0] || null;
@@ -261,13 +278,15 @@ function renderVideoPreview(data) {
     data.formats.forEach((fmt, index) => {
         const item = document.createElement('div');
         item.className = `format-item ${index === 0 ? 'selected' : ''}`;
+        const displayLabel = fmt.filename || fmt.quality_label;
+        const subInfo = fmt.filesize_str ? `${fmt.codec || 'auto'} • ${fmt.filesize_str}` : (fmt.resolution || 'Auto');
         item.innerHTML = `
-            <div>
-                <div class="format-label">${fmt.quality_label} (${fmt.ext.toUpperCase()})</div>
-                <div class="format-info">${fmt.codec || 'auto'} • ${fmt.filesize_str}</div>
+            <div style="flex:1; min-width:0; overflow:hidden;">
+                <div class="format-label" style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${displayLabel} (${(fmt.ext || 'MP4').toUpperCase()})</div>
+                <div class="format-info">${subInfo}</div>
             </div>
-            <div style="font-size: 11px; font-weight: bold; color: #818CF8;">
-                ${fmt.has_audio && fmt.has_video ? '✓ Video + Audio' : (fmt.has_audio ? 'Audio Only' : 'Video')}
+            <div style="font-size: 11px; font-weight: bold; color: #818CF8; margin-left:8px; white-space:nowrap;">
+                ${fmt.has_audio && fmt.has_video ? '✓ Video + Audio' : (fmt.has_video ? 'Video' : (fmt.has_audio ? 'Audio Only' : 'File'))}
             </div>
         `;
         item.addEventListener('click', () => {
@@ -283,6 +302,38 @@ function renderVideoPreview(data) {
     // Show Back button when preview card is open
     const backBtn = document.getElementById('btn-top-back');
     if (backBtn) backBtn.style.display = 'inline-block';
+}
+
+async function downloadAllAnalyzedFiles() {
+    if (!currentAnalysis || !currentAnalysis.formats || currentAnalysis.formats.length === 0) return;
+    const items = currentAnalysis.formats;
+    showToast(`🚀 Queuing ${items.length} files for download...`, 4000);
+
+    let started = 0;
+    for (const fmt of items) {
+        try {
+            const fileName = fmt.filename || fmt.quality_label;
+            await fetch('/api/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: currentAnalysis.source_url,
+                    filename: fileName,
+                    title: fileName,
+                    quality_label: fmt.quality_label,
+                    format_selector: fmt.download_selector || 'best',
+                    direct_url: fmt.direct_url,
+                    thumbnail: currentAnalysis.thumbnail && !currentAnalysis.thumbnail.startsWith('data:') ? currentAnalysis.thumbnail : '',
+                    duration: currentAnalysis.duration
+                })
+            });
+            started++;
+        } catch (e) {
+            console.error('Error queuing file:', e);
+        }
+    }
+    showToast(`✅ ${started} files queued for download!`, 4000);
+    switchTab('downloads');
 }
 
 // Watch Video Directly In-App Without Opening Website
@@ -363,13 +414,16 @@ async function startDownload(analysis, fmt) {
         return;
     }
 
+    const titleToUse = fmt.filename || (analysis.is_folder ? fmt.quality_label : analysis.title);
+
     try {
         const res = await fetch('/api/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 url: analysis.source_url,
-                title: analysis.title,
+                filename: fmt.filename || '',
+                title: titleToUse,
                 quality_label: fmt.quality_label,
                 format_selector: fmt.download_selector || 'best',
                 direct_url: fmt.direct_url,
@@ -379,7 +433,7 @@ async function startDownload(analysis, fmt) {
         });
         const result = await res.json();
         if (result.success) {
-            showToast(`⬇ Download started: ${analysis.title}`);
+            showToast(`⬇ Download started: ${titleToUse}`);
             switchTab('downloads');
         }
     } catch (err) {
@@ -883,9 +937,72 @@ async function loadSettings() {
         if (toggle && settings.floating_button_enabled !== undefined) {
             toggle.checked = settings.floating_button_enabled === 'true';
         }
+
+        // Update Download Save Location UI
+        const dirDisplay = document.getElementById('current-download-dir-display');
+        const dirInput = document.getElementById('input-custom-download-dir');
+        const badge = document.getElementById('dir-writable-badge');
+        const presetsContainer = document.getElementById('preset-folders-container');
+
+        if (dirDisplay && settings.download_folder) {
+            dirDisplay.textContent = settings.download_folder;
+        }
+        if (dirInput && settings.download_folder) {
+            dirInput.value = settings.download_folder;
+        }
+        if (badge) {
+            if (settings.is_writable) {
+                badge.textContent = '✓ Writable & Ready';
+                badge.style.background = 'rgba(16,185,129,0.15)';
+                badge.style.color = '#34D399';
+            } else {
+                badge.textContent = '⚠️ Folder Not Writable - Select another folder';
+                badge.style.background = 'rgba(239,68,68,0.15)';
+                badge.style.color = '#F87171';
+            }
+        }
+
+        if (presetsContainer && Array.isArray(settings.preset_folders)) {
+            presetsContainer.innerHTML = '';
+            settings.preset_folders.forEach(preset => {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-secondary btn-sm';
+                btn.style.cssText = 'text-align:left; justify-content:flex-start; padding:8px 10px; font-size:11px;';
+                btn.innerHTML = `<span style="font-weight:700; color:#EEF2FF;">${preset.label}</span><br><span style="color:#94A3B8; font-size:10px;">${preset.path}</span>`;
+                btn.onclick = () => saveCustomDownloadDir(preset.path);
+                presetsContainer.appendChild(btn);
+            });
+        }
+
         await checkOverlayPermissionStatus();
     } catch (err) {
         console.error('Error loading settings:', err);
+    }
+}
+
+async function saveCustomDownloadDir(customPath) {
+    const input = document.getElementById('input-custom-download-dir');
+    const path = customPath || (input ? input.value.trim() : '');
+    if (!path) {
+        showToast('⚠️ Please enter or select a folder path.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ download_folder: path })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('✅ Download location updated!', 3500);
+            await loadSettings();
+        } else {
+            showToast('❌ ' + (data.error || 'Failed to update folder.'), 4500);
+        }
+    } catch (err) {
+        showToast('Failed to save download location.', 3500);
     }
 }
 
@@ -973,7 +1090,11 @@ async function checkClipboardForVideo() {
                 if (text) {
                     const match = text.match(VIDEO_URL_REGEX);
                     if (match) {
-                        foundUrl = match[1];
+                        const rawUrl = match[1].replace(/[.,;:()\[\]{}<>"']+$/, '');
+                        const clean = rawUrl.split('?')[0].toLowerCase();
+                        if (!clean.endsWith('.svg') && !clean.endsWith('.png') && !clean.endsWith('.jpg') && !clean.endsWith('.jpeg') && !clean.endsWith('.gif') && !clean.endsWith('.webp') && !clean.endsWith('.ico') && !clean.endsWith('.css') && !clean.endsWith('.js')) {
+                            foundUrl = rawUrl;
+                        }
                     }
                 }
             } catch (_) {
@@ -1260,4 +1381,6 @@ function openUrlInBrowser(encodedUrl) {
     if (iframe) iframe.src = rawUrl;
 }
 window.openUrlInBrowser = openUrlInBrowser;
+window.saveCustomDownloadDir = saveCustomDownloadDir;
+window.downloadAllAnalyzedFiles = downloadAllAnalyzedFiles;
 

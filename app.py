@@ -24,7 +24,8 @@ from core.paths import (
     get_db_path,
     get_vault_dir,
     get_temp_playback_dir,
-    get_default_download_dir
+    get_default_download_dir,
+    is_directory_writable
 )
 from core.database import Database
 from core.detector import MediaDetector
@@ -393,7 +394,28 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/settings":
-            self.send_json(db.get_all_settings())
+            all_s = db.get_all_settings()
+            all_s["download_folder"] = downloader.download_folder
+            all_s["is_writable"] = is_directory_writable(downloader.download_folder)
+
+            presets = []
+            if is_running_on_android():
+                presets = [
+                    {"label": "Downloads / UniversalVideos (Default)", "path": get_default_download_dir()},
+                    {"label": "Movies Folder", "path": "/storage/emulated/0/Movies"},
+                    {"label": "DCIM / Camera Folder", "path": "/storage/emulated/0/DCIM/UniversalVideos"},
+                    {"label": "Internal Private Storage", "path": os.path.join(get_base_data_dir(), "downloads")}
+                ]
+            else:
+                home = os.path.expanduser("~")
+                presets = [
+                    {"label": "Downloads / UniversalVideos (Default)", "path": os.path.join(home, "Downloads", "UniversalVideos")},
+                    {"label": "Videos Folder", "path": os.path.join(home, "Videos", "UniversalVideos")},
+                    {"label": "Desktop / Downloads", "path": os.path.join(home, "Desktop", "Downloads")},
+                    {"label": "App Data Directory", "path": os.path.join(get_base_data_dir(), "downloads")}
+                ]
+            all_s["preset_folders"] = presets
+            self.send_json(all_s)
             return
 
         if path == "/api/overlay/status":
@@ -447,9 +469,33 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_json(result)
             return
 
+        if path == "/api/settings":
+            if "download_folder" in body:
+                new_folder = str(body.get("download_folder", "")).strip()
+                if new_folder:
+                    success, res_msg = downloader.set_download_folder(new_folder)
+                    if not success:
+                        self.send_error_json(res_msg, 400)
+                        return
+                    storage.download_folder = downloader.download_folder
+
+            if "floating_button_enabled" in body:
+                val = "true" if body["floating_button_enabled"] else "false"
+                db.set_setting("floating_button_enabled", val)
+            if "auto_lock_timeout" in body:
+                db.set_setting("auto_lock_timeout", str(body["auto_lock_timeout"]))
+            if "default_quality" in body:
+                db.set_setting("default_quality", str(body["default_quality"]))
+
+            all_s = db.get_all_settings()
+            all_s["download_folder"] = downloader.download_folder
+            all_s["is_writable"] = is_directory_writable(downloader.download_folder)
+            self.send_json({"success": True, "settings": all_s})
+            return
+
         if path == "/api/download":
             url = body.get("url", "").strip()
-            title = body.get("title", "Universal Video")
+            title = body.get("filename") or body.get("title", "Universal Video")
             quality_label = body.get("quality_label", "720p")
             format_selector = body.get("format_selector", "best")
             direct_url = body.get("direct_url")
@@ -713,6 +759,11 @@ def main():
         webview.start()
     except Exception as e:
         print(f"PyWebView closed or unavailable ({e}). Server alive at http://127.0.0.1:5824")
+        try:
+            import webbrowser
+            webbrowser.open("http://127.0.0.1:5824")
+        except Exception:
+            pass
         try:
             while True:
                 time.sleep(1)

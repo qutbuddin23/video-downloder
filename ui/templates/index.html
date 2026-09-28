@@ -118,6 +118,9 @@
                             ⬇ Download
                         </button>
                     </div>
+                    <button id="btn-download-all" class="btn btn-primary" style="display:none; width:100%; margin-top:10px; background:linear-gradient(135deg, #10B981, #059669); font-weight:700;" onclick="downloadAllAnalyzedFiles()">
+                        📁 Download All Files (<span id="download-all-count">0</span>)
+                    </button>
                 </div>
             </section>
 
@@ -231,6 +234,35 @@
                             <div id="temp-files-badge" style="font-size:11px; color:#94A3B8;">0 B (0 files)</div>
                         </div>
                         <button class="btn btn-secondary btn-sm" onclick="cleanTempFiles()">Clean</button>
+                    </div>
+                </div>
+
+                <!-- Card: Download Save Location -->
+                <div class="card">
+                    <div class="card-title"><span>📁</span> Download Save Location</div>
+                    <div style="font-size:11px; color:#94A3B8; margin-bottom:10px;">
+                        Choose where downloaded videos, files, and folders are saved on your device.
+                    </div>
+
+                    <div style="background:rgba(15,23,42,0.6); padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.08); margin-bottom:12px;">
+                        <div style="font-size:10px; color:#818CF8; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Current Active Directory</div>
+                        <div id="current-download-dir-display" style="font-size:12px; font-weight:600; color:#F8FAFC; word-break:break-all;">Loading...</div>
+                        <div id="dir-writable-badge" style="display:inline-block; margin-top:6px; font-size:10px; padding:2px 8px; border-radius:12px; background:rgba(16,185,129,0.15); color:#34D399; font-weight:700;">
+                            ✓ Writable & Ready
+                        </div>
+                    </div>
+
+                    <div style="font-size:11px; font-weight:700; color:#CBD5E1; margin-bottom:6px;">QUICK STORAGE PRESETS:</div>
+                    <div id="preset-folders-container" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+                        <!-- Injected by JS -->
+                    </div>
+
+                    <div style="font-size:11px; font-weight:700; color:#CBD5E1; margin-bottom:6px;">CUSTOM SAVE DIRECTORY:</div>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="input-custom-download-dir" class="url-input-box" placeholder="Enter custom folder path..." style="flex:1; font-size:12px;" />
+                        <button id="btn-save-download-dir" class="btn btn-primary btn-sm" onclick="saveCustomDownloadDir()" style="font-weight:700; white-space:nowrap; padding:0 14px;">
+                            💾 Save Location
+                        </button>
                     </div>
                 </div>
 

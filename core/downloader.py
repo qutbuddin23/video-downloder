@@ -12,7 +12,7 @@ import uuid
 import threading
 import urllib.parse
 import warnings
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import requests
 from core.database import Database
 from core.storage_manager import format_bytes
@@ -406,7 +406,9 @@ class DownloadTask:
         self.url = url
         self.title = title
         raw_fmt = (format_selector or "best").strip()
-        if " " in raw_fmt or "(" in raw_fmt or ")" in raw_fmt or any(w in raw_fmt.lower() for w in ["stream", "direct", "auto", "unknown"]):
+        if raw_fmt.startswith("mega_node:") or raw_fmt == "mega":
+            self.format_selector = raw_fmt
+        elif " " in raw_fmt or "(" in raw_fmt or ")" in raw_fmt or any(w in raw_fmt.lower() for w in ["stream", "direct", "auto", "unknown"]):
             self.format_selector = "best"
         else:
             self.format_selector = raw_fmt
@@ -460,8 +462,8 @@ class DownloadTask:
                 downloaded_bytes=0, total_bytes=0, speed=0.0
             )
 
-            # Strategy 1: Native MEGA.nz cloud download with AES-CTR decryption
-            if is_mega_url(self.url) or self.format_selector == "mega":
+            # Strategy 1: Native MEGA.nz cloud download with AES-CTR decryption (single file or folder node)
+            if is_mega_url(self.url) or self.format_selector == "mega" or (self.format_selector and self.format_selector.startswith("mega_node:")):
                 self._download_mega()
                 return
 
@@ -535,19 +537,36 @@ class DownloadTask:
                 pass
 
     def _download_mega(self):
-        """Executes native streaming download and AES-CTR decryption for MEGA.nz files."""
-        info = get_mega_file_info(self.url)
-        if not info.get("success"):
-            raise ValueError(info.get("error_message", "Failed to resolve MEGA link."))
+        """Executes native streaming download and AES-CTR decryption for MEGA.nz files and folder items."""
+        clean_title = sanitize_filename(self.title)
 
-        filename = info.get("filename") or f"{sanitize_filename(self.title)}.bin"
-        direct_url = info.get("direct_url")
-        fmt = info.get("formats", [{}])[0]
-        key_bytes = fmt.get("mega_key_bytes")
-        initial_counter = fmt.get("mega_initial_counter")
+        if self.format_selector and self.format_selector.startswith("mega_node:"):
+            from core.mega import get_mega_node_download_info
+            parts = self.format_selector.split(":")
+            if len(parts) >= 4:
+                folder_id = parts[1]
+                folder_key = parts[2]
+                node_handle = parts[3]
+                direct_url, key_bytes, initial_counter, filename, size = get_mega_node_download_info(
+                    folder_id, folder_key, node_handle
+                )
+                clean_fn = sanitize_filename(filename)
+                final_path = os.path.join(self.output_dir, clean_fn)
+            else:
+                raise ValueError("Invalid MEGA folder node selector.")
+        else:
+            info = get_mega_file_info(self.url)
+            if not info.get("success"):
+                raise ValueError(info.get("error_message", "Failed to resolve MEGA link."))
 
-        clean_fn = sanitize_filename(filename)
-        final_path = os.path.join(self.output_dir, clean_fn)
+            filename = info.get("filename") or f"{clean_title}.bin"
+            direct_url = info.get("direct_url")
+            fmt = info.get("formats", [{}])[0]
+            key_bytes = fmt.get("mega_key_bytes")
+            initial_counter = fmt.get("mega_initial_counter")
+
+            clean_fn = sanitize_filename(filename)
+            final_path = os.path.join(self.output_dir, clean_fn)
 
         def _mega_progress(downloaded, total):
             pct = (downloaded / total * 100.0) if total > 0 else 0.0
@@ -581,6 +600,7 @@ class DownloadTask:
             )
             self.db.update_download_filepath(self.task_id, final_path, final_size)
             AndroidNotificationHelper.show_complete(self.notification_id, self.title)
+            scan_file_to_android_gallery(final_path)
             scan_media_file(final_path)
 
     def _download_direct_http(self, custom_referer: str = ""):
@@ -1016,6 +1036,22 @@ class DownloadManager:
 
         self.download_folder = saved_dir
         os.makedirs(self.download_folder, exist_ok=True)
+
+    def set_download_folder(self, new_dir: str) -> Tuple[bool, str]:
+        """Sets and persists new download save location after writability check."""
+        if not new_dir or not isinstance(new_dir, str):
+            return False, "Download folder path cannot be empty."
+        target_dir = os.path.abspath(new_dir.strip())
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            if not is_directory_writable(target_dir):
+                return False, f"Folder '{target_dir}' is not writable. Please choose another location."
+            self.download_folder = target_dir
+            self.db.set_setting("download_folder", target_dir)
+            print(f"[DownloadManager] Download save location updated to: {target_dir}")
+            return True, target_dir
+        except Exception as e:
+            return False, str(e)
 
     def create_download(self, url: str, title: str, quality_label: str,
                         format_selector: str, direct_url: Optional[str],

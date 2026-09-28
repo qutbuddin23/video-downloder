@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
 
-from core.mega import is_mega_url, get_mega_file_info
+from core.mega import is_mega_url, get_mega_info, is_mega_folder_url
 from core.terabox import is_terabox_url, get_terabox_file_info
 
 DIRECT_DOWNLOAD_EXTS = (
@@ -163,13 +163,20 @@ class MediaDetector:
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "https://" + url
 
-        # 1. Native MEGA.nz Cloud Link Resolution
+        # 1. Native MEGA.nz Cloud Link Resolution (Files and Folders)
         if is_mega_url(url):
-            return get_mega_file_info(url)
+            return get_mega_info(url)
 
         # 2. TeraBox Cloud Link Resolution
         if is_terabox_url(url):
             return get_terabox_file_info(url)
+
+        # 2b. Specialized extractor for You-Porn / YouPorn
+        low_url = url.lower()
+        if "you-porn.com" in low_url or "youporn.com" in low_url:
+            yp_res = self._extract_youporn(url)
+            if yp_res.get("success"):
+                return yp_res
 
         # 3. Fast path: Direct file or media URL (.mp4, .zip, .apk, .pdf, etc.)
         if is_direct_download_url(url):
@@ -219,7 +226,7 @@ class MediaDetector:
                 info = ydl.extract_info(url, download=False)
                 if info:
                     result = self._process_ytdlp_info(info, url)
-                    if result.get("success") and result.get("formats") and any(f.get("has_video") for f in result["formats"]):
+                    if result.get("success") and result.get("formats"):
                         return result
         except Exception as e:
             error_str = str(e).lower()
@@ -405,6 +412,109 @@ class MediaDetector:
             "detected_count": len(all_formats)
         }
 
+    def _extract_youporn(self, url: str) -> Dict[str, Any]:
+        """Specialized high-speed extractor for You-Porn / YouPorn videos."""
+        headers = {
+            "User-Agent": self.DEFAULT_HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": url
+        }
+        html = ""
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                html = r.text
+        except Exception:
+            pass
+
+        if not html:
+            try:
+                import subprocess
+                cmd = ["curl.exe", "-s", "-L", "-A", headers["User-Agent"], "-H", f"Referer: {url}", url]
+                res = subprocess.run(cmd, capture_output=True, timeout=12)
+                html = res.stdout.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        if not html:
+            return {"success": False}
+
+        title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
+        raw_title = title_m.group(1).strip() if title_m else "YouPorn Video"
+        title = re.sub(r'\s*-\s*Free Porn Videos.*', '', raw_title, flags=re.I).strip() or raw_title
+
+        thumb_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        thumbnail = thumb_m.group(1) if thumb_m else ""
+
+        md_match = re.search(r'mediaDefinition\s*[:=]\s*(\[.*?\])\s*[,;]', html, re.DOTALL)
+        if not md_match:
+            return {"success": False}
+
+        try:
+            import json
+            md_list = json.loads(md_match.group(1))
+            mp4_api = next((m.get("videoUrl") for m in md_list if m.get("format") == "mp4" and m.get("videoUrl")), None)
+            if not mp4_api:
+                return {"success": False}
+
+            api_resp = ""
+            try:
+                r_api = requests.get(mp4_api, headers=headers, timeout=10)
+                if r_api.status_code == 200:
+                    api_resp = r_api.text
+            except Exception:
+                pass
+
+            if not api_resp:
+                import subprocess
+                cmd = ["curl.exe", "-s", "-L", "-A", headers["User-Agent"], "-H", f"Referer: {url}", mp4_api]
+                res = subprocess.run(cmd, capture_output=True, timeout=12)
+                api_resp = res.stdout.decode("utf-8", errors="replace")
+
+            qualities = json.loads(api_resp)
+            formats = []
+            for item in qualities:
+                q = str(item.get("quality") or "720")
+                v_url = item.get("videoUrl")
+                if not v_url:
+                    continue
+                digits = re.sub(r'\D', '', q)
+                h = int(digits) if digits else 720
+                formats.append({
+                    "format_id": f"yp_{q}p",
+                    "quality_label": f"{q}p HD (MP4)" if h >= 720 else f"{q}p (MP4)",
+                    "resolution": f"{q}p",
+                    "height": h,
+                    "ext": "mp4",
+                    "codec": "h264/aac",
+                    "filesize": 0,
+                    "filesize_str": f"{q}p Stream",
+                    "has_audio": True,
+                    "has_video": True,
+                    "direct_url": v_url,
+                    "download_selector": "direct",
+                    "referer": url
+                })
+
+            if formats:
+                formats.sort(key=lambda x: x["height"], reverse=True)
+                return {
+                    "success": True,
+                    "title": title,
+                    "thumbnail": thumbnail,
+                    "duration": 0,
+                    "duration_str": "HD Video",
+                    "source_url": url,
+                    "direct_url": formats[0]["direct_url"],
+                    "is_protected": False,
+                    "formats": formats,
+                    "detected_count": len(formats)
+                }
+        except Exception as e:
+            print(f"[Detector] YouPorn parse error: {e}")
+
+        return {"success": False}
+
     def _sniff_webpage(self, url: str) -> Dict[str, Any]:
         """
         Deep webpage scanner: Fetches HTML and inspects:
@@ -412,25 +522,41 @@ class MediaDetector:
         - OpenGraph & Twitter video metadata
         - HLS .m3u8 playlist URLs
         - MPEG-DASH .mpd manifest URLs
+        - Embedded player iframes (Playerjs, JWPlayer, etc.)
         - Direct .mp4 / .webm video links in page scripts & JS configs
         """
+        html = ""
+        cookies = MediaDetector.get_cookies_for_url(url)
         try:
-            cookies = MediaDetector.get_cookies_for_url(url)
             resp = requests.get(url, headers=self.DEFAULT_HEADERS, cookies=cookies or None, timeout=12)
-            html = resp.text
-            domain = urllib.parse.urlsplit(url).netloc
-            if getattr(resp, "cookies", None):
-                try:
-                    MediaDetector._cookie_jar[domain] = resp.cookies.get_dict()
-                except Exception:
-                    pass
-        except Exception as e:
+            if resp.status_code == 200:
+                html = resp.text
+                domain = urllib.parse.urlsplit(url).netloc
+                if getattr(resp, "cookies", None):
+                    try:
+                        MediaDetector._cookie_jar[domain] = resp.cookies.get_dict()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        if not html:
+            # Fallback to curl.exe for blocked connections, SNI resets, or network firewalls
+            try:
+                import subprocess
+                cmd = ["curl.exe", "-s", "-L", "-A", self.DEFAULT_HEADERS["User-Agent"], "-H", f"Referer: {url}", url]
+                res = subprocess.run(cmd, capture_output=True, timeout=15)
+                html = res.stdout.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        if not html:
             return {
                 "success": False,
                 "title": "Unreachable URL",
                 "source_url": url,
                 "is_protected": False,
-                "error_message": f"Could not connect to URL: {str(e)}",
+                "error_message": "Could not connect to URL or page blocked by network.",
                 "formats": []
             }
 
@@ -477,9 +603,40 @@ class MediaDetector:
                 if is_valid_media_url(cand):
                     detected_urls.add(cand)
 
-        # 4. JS configurations and player script links (VideoJS, JWPlayer, Spankbang, FluidPlayer)
+        # 4. Scan iframes for embedded players (Playerjs, embed players, etc.)
+        for ifr_m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', clean_html, re.IGNORECASE):
+            ifr_raw = ifr_m.group(1).strip()
+            ifr_url = urllib.parse.urljoin(url, ifr_raw)
+            ifr_low = ifr_url.lower()
+            if any(ad in ifr_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick", "googleads", "doubleclick"]):
+                continue
+            try:
+                ifr_resp = requests.get(ifr_url, headers={**self.DEFAULT_HEADERS, "Referer": url}, cookies=cookies or None, timeout=8)
+                if ifr_resp.ok:
+                    ifr_html = ifr_resp.text.replace(r'\/', '/')
+                    # Check Playerjs syntax: file: "[720]url,[360]url" or file: "url"
+                    for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', ifr_html):
+                        for sub_part in pjs_val.split(','):
+                            sub_m = re.search(r'(?:\[([^\]]+)\])?(https?://[^\s,"\'<>]+)', sub_part.strip())
+                            if sub_m and is_valid_media_url(sub_m.group(2)):
+                                detected_urls.add(sub_m.group(2))
+                    # Also scan iframes for direct media streams
+                    for sub_m in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', ifr_html, re.IGNORECASE):
+                        if is_valid_media_url(sub_m):
+                            detected_urls.add(sub_m)
+            except Exception:
+                pass
+
+        # 5. Check Playerjs syntax directly in main HTML
+        for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', clean_html):
+            for sub_part in pjs_val.split(','):
+                sub_m = re.search(r'(?:\[([^\]]+)\])?(https?://[^\s,"\'<>]+)', sub_part.strip())
+                if sub_m and is_valid_media_url(sub_m.group(2)):
+                    detected_urls.add(sub_m.group(2))
+
+        # 6. JS configurations and player script links (VideoJS, JWPlayer, Spankbang, FluidPlayer)
         js_patterns = [
-            r'["\']?(?:file|src|url|video_url|stream_url|source|streamUrl|videoUrl|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
+            r'["\']?(?:file|src|url|video_url|video_alt_url|stream_url|source|streamUrl|videoUrl|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
             r'["\']?(?:1080p|720p|480p|360p|240p|high|med|low)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
             r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?',
             r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?',

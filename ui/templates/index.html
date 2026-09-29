@@ -125,13 +125,27 @@
             </section>
 
             <!-- Screen 2: In-App Browser & Sniffer -->
-            <section id="screen-browser" class="screen">
+            <section id="screen-browser" class="screen" style="position:relative;">
                 <div class="browser-bar">
                     <input type="text" id="browser-url-input" class="browser-input" placeholder="Enter website URL..." value="https://en.wikipedia.org" />
                     <button id="btn-browser-go" class="btn btn-secondary btn-sm">Go</button>
                     <button id="btn-browser-detect" class="btn btn-primary btn-sm">🎯 Sniff</button>
                 </div>
-                <iframe id="browser-webview" class="browser-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+                <!-- Floating Stream Detected Notification Banner -->
+                <div id="browser-sniff-banner" class="browser-sniff-banner" style="display:none;">
+                    <div class="sniff-banner-info">
+                        <span class="sniff-banner-icon">⚡</span>
+                        <div class="sniff-banner-text">
+                            <div class="sniff-banner-title" id="sniff-banner-title">Stream Detected!</div>
+                            <div class="sniff-banner-sub" id="sniff-banner-url">Ready to turbo download</div>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                        <button id="btn-browser-sniff-dl" class="btn btn-primary btn-sm" style="font-weight:700; white-space:nowrap;">⬇ Download</button>
+                        <button id="btn-browser-sniff-close" class="btn btn-secondary btn-sm" style="padding:4px 8px;">✕</button>
+                    </div>
+                </div>
+                <iframe id="browser-webview" class="browser-frame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
             </section>
 
             <!-- Screen 3: Downloads Manager -->

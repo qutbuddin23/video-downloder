@@ -12,7 +12,7 @@ import uuid
 import threading
 import urllib.parse
 import warnings
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import requests
 from core.database import Database
 from core.storage_manager import format_bytes
@@ -20,6 +20,7 @@ from core.paths import get_default_download_dir, is_directory_writable, get_base
 from core.mega import is_mega_url, get_mega_file_info, download_mega_file, parse_mega_url
 from core.terabox import is_terabox_url, get_terabox_file_info
 from core.detector import DIRECT_DOWNLOAD_EXTS, is_direct_download_url
+from core.turbo_downloader import TurboSegmentedDownloader
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
@@ -732,7 +733,13 @@ class DownloadTask:
 
         # Multi-profile browser headers to defeat 470 / 403 / anti-bot blocks
         header_profiles = [
-            # Profile 1: Mobile Chrome Browser
+            # Profile 1: Desktop Chrome Browser
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            # Profile 2: Mobile Chrome Browser
             {
                 "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
                 "Accept": "*/*",
@@ -741,13 +748,7 @@ class DownloadTask:
                 "Sec-Fetch-Mode": "no-cors",
                 "Sec-Fetch-Dest": "video",
             },
-            # Profile 2: Desktop Chrome Browser
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "*/*",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            # Profile 3: Android MediaPlayer / Stagefright (Bypasses bot checks for media CDNs)
+            # Profile 3: Android MediaPlayer / Stagefright
             {
                 "User-Agent": "stagefright/1.2 (Linux;Android 10)",
                 "Accept": "*/*",
@@ -772,6 +773,117 @@ class DownloadTask:
         if target_url and target_url != self.url:
             all_cookies.update(MediaDetector.get_cookies_for_url(target_url))
 
+        # Best referer and headers for Turbo Segmented Downloader
+        best_ref = deduped_refs[0] if deduped_refs else ""
+        chosen_headers = dict(header_profiles[0])
+        if best_ref:
+            chosen_headers["Referer"] = best_ref
+            try:
+                p = urllib.parse.urlsplit(best_ref)
+                chosen_headers["Origin"] = f"{p.scheme}://{p.netloc}"
+            except Exception:
+                pass
+
+        def _turbo_progress(downloaded_b, total_b, spd, spd_s):
+            self.last_bytes = downloaded_b
+            self.current_speed = spd
+            pct = (downloaded_b / total_b * 100.0) if total_b > 0 else 0.0
+            now = time.time()
+            if now - self.last_time >= 0.7 or (total_b > 0 and downloaded_b >= total_b):
+                self.last_time = now
+                AndroidNotificationHelper.update_progress(self.notification_id, self.title, pct, spd_s)
+                self.db.update_download_progress(
+                    self.task_id, status="downloading", progress=round(pct, 1),
+                    downloaded_bytes=downloaded_b, total_bytes=total_b, speed=round(spd, 1)
+                )
+
+        turbo = TurboSegmentedDownloader(
+            url=target_url,
+            output_path=final_path,
+            headers=chosen_headers,
+            cookies=all_cookies,
+            num_threads=8,
+            progress_callback=_turbo_progress,
+            is_cancelled_fn=lambda: self.is_cancelled,
+            is_paused_fn=lambda: self.is_paused
+        )
+
+        success = False
+        try:
+            success = turbo.download()
+        except Exception as turbo_err:
+            print(f"[Downloader] Turbo direct download notice: {turbo_err}, attempting multi-profile fallback...")
+            success = self._download_direct_http_fallback(
+                target_url=target_url,
+                final_path=final_path,
+                part_path=part_path,
+                deduped_refs=deduped_refs,
+                header_profiles=header_profiles,
+                all_cookies=all_cookies
+            )
+
+        if self.is_cancelled:
+            if os.path.exists(final_path):
+                try: os.remove(final_path)
+                except Exception: pass
+            if os.path.exists(part_path):
+                try: os.remove(part_path)
+                except Exception: pass
+            self.db.update_download_progress(
+                self.task_id, status="cancelled", progress=0.0,
+                downloaded_bytes=0, total_bytes=0, speed=0.0
+            )
+            AndroidNotificationHelper.cancel(self.notification_id)
+            return
+
+        if self.is_paused:
+            t_size = turbo.total_size or getattr(self, "_fallback_total_size", 0)
+            self.db.update_download_progress(
+                self.task_id, status="paused",
+                progress=(self.last_bytes / t_size * 100) if t_size else 0,
+                downloaded_bytes=self.last_bytes, total_bytes=t_size, speed=0.0
+            )
+            AndroidNotificationHelper.cancel(self.notification_id)
+            return
+
+        if success and os.path.exists(final_path):
+            file_size = os.path.getsize(final_path)
+
+            # Security sanity check: Disallow tiny files that contain HTML/SVG markup
+            if file_size < 1024:
+                try:
+                    with open(final_path, "rb") as check_f:
+                        head = check_f.read(256).lower()
+                        if b"<svg" in head or b"<!doctype html" in head or b"<html" in head:
+                            os.remove(final_path)
+                            raise ValueError("Server returned an HTML block page (bot protection / age check) instead of video.")
+                except Exception as ve:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    raise ve
+
+            self.db.update_download_filepath(self.task_id, final_path, file_size)
+            self.db.update_download_progress(
+                self.task_id, status="completed", progress=100.0,
+                downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
+            )
+            scan_file_to_android_gallery(final_path)
+            AndroidNotificationHelper.show_complete(self.notification_id, self.title)
+            try:
+                from core.overlay import show_android_toast
+                show_android_toast(f"✅ Video saved to phone: {clean_title}")
+            except Exception:
+                pass
+
+    def _download_direct_http_fallback(
+        self,
+        target_url: str,
+        final_path: str,
+        part_path: str,
+        deduped_refs: List[str],
+        header_profiles: List[Dict[str, str]],
+        all_cookies: Dict[str, str]
+    ) -> bool:
         session = requests.Session()
         if all_cookies:
             session.cookies.update(all_cookies)
@@ -833,9 +945,10 @@ class DownloadTask:
         total_size = downloaded
         if "content-length" in resp.headers:
             total_size += int(resp.headers["content-length"])
+        self._fallback_total_size = total_size
 
         mode = "ab" if downloaded > 0 else "wb"
-        chunk_size = 1024 * 1024  # 1 MB chunk buffer for maximum network throughput
+        chunk_size = 2 * 1024 * 1024  # 2 MB chunk buffer
         self.last_time = time.time()
         self.last_bytes = downloaded
 
@@ -854,25 +967,9 @@ class DownloadTask:
                                 pass
                         raise ValueError("Server returned an HTML block page (bot protection / age check) instead of video.")
 
-                if self.is_cancelled:
+                if self.is_cancelled or self.is_paused:
                     f.close()
-                    if os.path.exists(part_path):
-                        os.remove(part_path)
-                    self.db.update_download_progress(
-                        self.task_id, status="cancelled", progress=0.0,
-                        downloaded_bytes=0, total_bytes=total_size, speed=0.0
-                    )
-                    AndroidNotificationHelper.cancel(self.notification_id)
-                    return
-
-                if self.is_paused:
-                    self.db.update_download_progress(
-                        self.task_id, status="paused",
-                        progress=(downloaded / total_size * 100) if total_size else 0,
-                        downloaded_bytes=downloaded, total_bytes=total_size, speed=0.0
-                    )
-                    AndroidNotificationHelper.cancel(self.notification_id)
-                    return
+                    return False
 
                 if chunk:
                     f.write(chunk)
@@ -880,7 +977,7 @@ class DownloadTask:
 
                     now = time.time()
                     elapsed = now - self.last_time
-                    if elapsed >= 0.8:
+                    if elapsed >= 0.7:
                         speed = (downloaded - self.last_bytes) / elapsed
                         self.last_time = now
                         self.last_bytes = downloaded
@@ -894,38 +991,12 @@ class DownloadTask:
                             self.notification_id, self.title, prog, speed_str
                         )
 
-        # Download completed
         if os.path.exists(part_path):
             if os.path.exists(final_path):
                 os.remove(final_path)
             os.rename(part_path, final_path)
-            file_size = os.path.getsize(final_path)
-
-            # Security sanity check: Disallow tiny files that contain HTML/SVG markup
-            if file_size < 1024:
-                try:
-                    with open(final_path, "rb") as check_f:
-                        head = check_f.read(256).lower()
-                        if b"<svg" in head or b"<!doctype html" in head or b"<html" in head:
-                            os.remove(final_path)
-                            raise ValueError("Server returned an HTML block page (bot protection / age check) instead of video.")
-                except Exception as ve:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                    raise ve
-
-            self.db.update_download_filepath(self.task_id, final_path, file_size)
-            self.db.update_download_progress(
-                self.task_id, status="completed", progress=100.0,
-                downloaded_bytes=file_size, total_bytes=file_size, speed=0.0
-            )
-            scan_file_to_android_gallery(final_path)
-            AndroidNotificationHelper.show_complete(self.notification_id, self.title)
-            try:
-                from core.overlay import show_android_toast
-                show_android_toast(f"✅ Video saved to phone: {clean_title}")
-            except Exception:
-                pass
+            return True
+        return False
 
     def _download_via_ytdlp(self, override_url: Optional[str] = None):
         target_to_use = override_url or self.url
@@ -1002,9 +1073,9 @@ class DownloadTask:
             "geo_bypass": True,
             "logtostderr": False,
             "logger": SafeYtdlLogger(),
-            "concurrent_fragment_downloads": 5,  # High speed multi-part downloads
-            "buffersize": 2 * 1024 * 1024,      # 2 MB buffer for fast disk writes
-            "http_chunk_size": 10485760,        # 10 MB HTTP chunks
+            "concurrent_fragment_downloads": 10,  # Turbo high-speed multi-fragment downloads
+            "buffersize": 4 * 1024 * 1024,       # 4 MB buffer for rapid disk writes
+            "http_chunk_size": 20971520,         # 20 MB HTTP chunk pipeline
             "socket_timeout": 20,
             "retries": 10,
             "fragment_retries": 10,
@@ -1032,13 +1103,19 @@ class DownloadTask:
                             self._direct_http_tried = True
                             self._download_direct_http()
                             return
-                        raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
+                        err_str = str(sec_err)
+                        if any(w in err_str.lower() for w in ["cloudflare", "bot", "captcha", "age check", "sign in", "unsupported url"]):
+                            raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
+                        raise ValueError(f"Download error: {err_str[:120]}")
                 else:
                     if not getattr(self, "_direct_http_tried", False) and is_direct:
                         self._direct_http_tried = True
                         self._download_direct_http()
                         return
-                    raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
+                    err_str = str(primary_err)
+                    if any(w in err_str.lower() for w in ["cloudflare", "bot", "captcha", "age check", "sign in", "unsupported url"]):
+                        raise ValueError("Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download.")
+                    raise ValueError(f"Download error: {err_str[:120]}")
 
         # Reliably resolve final file path after download completes
         final_file = None

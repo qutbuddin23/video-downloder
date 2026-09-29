@@ -401,6 +401,102 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             self.send_error_json("Thumbnail fetch failed", 502)
             return
 
+        if path == "/api/browser-proxy":
+            target_url = query.get("url", [""])[0]
+            if not target_url:
+                self.send_error_json("Missing URL parameter", 400)
+                return
+            if not target_url.startswith("http://") and not target_url.startswith("https://"):
+                target_url = "https://" + target_url
+
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": target_url
+                }
+                from core.detector import MediaDetector
+                cookies = MediaDetector.get_cookies_for_url(target_url)
+
+                resp = requests.get(target_url, headers=headers, cookies=cookies or None, timeout=15, allow_redirects=True)
+                final_target = resp.url
+                c_type = resp.headers.get("Content-Type", "text/html").lower()
+
+                if "text/html" in c_type or "application/xhtml" in c_type:
+                    raw_html = resp.text
+
+                    sniffer_script = f"""
+<base href="{final_target}">
+<script>
+(function() {{
+    function report(mediaUrl) {{
+        if (!mediaUrl || typeof mediaUrl !== 'string') return;
+        var u = mediaUrl.trim();
+        if (u.indexOf('data:') === 0 || u.indexOf('blob:') === 0) return;
+        if (u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1 || u.indexOf('.mp4') !== -1 || u.indexOf('.webm') !== -1 || u.indexOf('/video/') !== -1 || u.indexOf('/stream/') !== -1) {{
+            try {{
+                window.parent.postMessage({{
+                    type: 'SNIFFED_STREAM',
+                    url: u,
+                    pageUrl: '{final_target}',
+                    title: document.title || 'Detected Video'
+                }}, '*');
+            }} catch(e) {{}}
+        }}
+    }}
+    try {{
+        var origPlay = HTMLMediaElement.prototype.play;
+        HTMLMediaElement.prototype.play = function() {{
+            if (this.src) report(this.src);
+            if (this.currentSrc) report(this.currentSrc);
+            return origPlay.apply(this, arguments);
+        }};
+    }} catch(e) {{}}
+    try {{
+        var origFetch = window.fetch;
+        window.fetch = function(input, init) {{
+            var u = (typeof input === 'string') ? input : (input && input.url);
+            if (u) report(u);
+            return origFetch.apply(this, arguments);
+        }};
+    }} catch(e) {{}}
+    try {{
+        var origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {{
+            if (url) report(url);
+            return origOpen.apply(this, arguments);
+        }};
+    }} catch(e) {{}}
+}})();
+</script>
+"""
+                    if "<head>" in raw_html.lower():
+                        injected_html = re.sub(r'(<head[^>]*>)', r'\1' + sniffer_script, raw_html, count=1, flags=re.I)
+                    else:
+                        injected_html = sniffer_script + raw_html
+
+                    body = injected_html.encode("utf-8", errors="replace")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                else:
+                    self.send_response(resp.status_code)
+                    for h in ["Content-Type", "Content-Length", "Accept-Ranges"]:
+                        if h in resp.headers:
+                            self.send_header(h, resp.headers[h])
+                    self.send_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(resp.content)
+                    return
+            except Exception as pe:
+                self.send_error_json(f"Proxy request failed: {pe}", 502)
+                return
+
         if path == "/api/overlay/latest-url":
             url = latest_sniffed_url
             title = latest_auto_download_title

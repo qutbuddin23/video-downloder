@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore", message=".*Support for Python version.*depreca
 
 from core.mega import is_mega_url, get_mega_info, is_mega_folder_url
 from core.terabox import is_terabox_url, get_terabox_file_info
+from core.unpacker import PackerDecoder, PlayerjsDecoder, extract_media_from_unpacked_js
 
 DIRECT_DOWNLOAD_EXTS = (
     # Video & Audio
@@ -62,6 +63,10 @@ def is_valid_media_url(u: str) -> bool:
     u_strip = u.strip()
     if not (u_strip.startswith("http://") or u_strip.startswith("https://")):
         return False
+
+    if is_mega_url(u_strip) or is_terabox_url(u_strip):
+        return True
+
     clean_u = u_strip.split("?")[0].lower()
     disallowed = (
         ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
@@ -74,7 +79,27 @@ def is_valid_media_url(u: str) -> bool:
     low_u = u_strip.lower()
     if any(tok in low_u for tok in [".svg?", ".png?", ".jpg?", "format=svg", "format=png", "format=jpg", "format=webp", "data:image/", "mime=image/"]):
         return False
-    return True
+
+    # Check against all legitimate direct download extensions (media, archives, packages, documents)
+    if any(clean_u.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS):
+        return True
+
+    # If no file extension, verify if it has clear media signatures in query or path
+    media_signatures = (
+        "mime=video", "mime=audio", "content_type=video", "content_type=audio",
+        "/videoplayback", "videoplayback?", "playlist.m3u8", "master.m3u8",
+        "/manifest/hls", "/manifest/dash", "/hls/", "/dash/", "video_stream",
+        "segment", "chunklist"
+    )
+    if any(sig in low_u for sig in media_signatures):
+        return True
+
+    # Disallow player / embed / iframe / watch / video webpage URLs without media extensions
+    page_patterns = ("/player/", "/embed/", "/iframe/", "/watch/", "/e/", "/v/")
+    if any(pat in low_u for pat in page_patterns):
+        return False
+
+    return False
 
 
 def get_android_cookies(url: str) -> Dict[str, str]:
@@ -634,9 +659,8 @@ class MediaDetector:
                 continue
 
             # If it's directly a video stream format
-            if any(ifr_low.split("?")[0].endswith(ext) for ext in [".mp4", ".m3u8", ".mpd", ".webm", ".mkv"]):
-                if is_valid_media_url(ifr_url):
-                    detected_urls.add(ifr_url)
+            if is_valid_media_url(ifr_url):
+                detected_urls.add(ifr_url)
                 continue
 
             # Otherwise, fetch the embedded player page
@@ -644,17 +668,25 @@ class MediaDetector:
                 ifr_resp = requests.get(ifr_url, headers={**self.DEFAULT_HEADERS, "Referer": url}, cookies=cookies or None, timeout=8)
                 if ifr_resp.ok:
                     ifr_html = ifr_resp.text.replace(r'\/', '/')
-                    # Check Playerjs syntax: file: "[720]url,[360]url" or file: "url"
+
+                    # 1. Unpack Dean Edwards packed JavaScript (eval(function(p,a,c,k,e,d)...))
+                    for unpacked in PackerDecoder.find_and_unpack_all(ifr_html):
+                        for m_url in extract_media_from_unpacked_js(unpacked):
+                            if is_valid_media_url(m_url):
+                                detected_urls.add(m_url)
+
+                    # 2. Check Playerjs syntax: file: "[720]url,[360]url" or file: "url"
                     for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', ifr_html):
-                        for sub_part in pjs_val.split(','):
-                            sub_m = re.search(r'(?:\[([^\]]+)\])?(https?://[^\s,"\'<>]+)', sub_part.strip())
-                            if sub_m and is_valid_media_url(sub_m.group(2)):
-                                detected_urls.add(sub_m.group(2))
-                    # Scan for direct media streams
+                        for _, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
+                            if is_valid_media_url(decoded_u):
+                                detected_urls.add(decoded_u)
+
+                    # 3. Scan for direct media streams
                     for sub_m in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', ifr_html, re.IGNORECASE):
                         if is_valid_media_url(sub_m):
                             detected_urls.add(sub_m)
-                    # Scan for nested iframes (depth 2) e.g. nmcorp, doodstream, streamtape, mixdrop
+
+                    # 4. Scan for nested iframes (depth 2) e.g. nmcorp, doodstream, streamtape, mixdrop
                     for nested_m in re.finditer(r'<iframe\s+[^>]*(?:src|data-src)=["\']([^"\']+)["\']', ifr_html, re.IGNORECASE):
                         nested_raw = nested_m.group(1).strip()
                         nested_url = urllib.parse.urljoin(ifr_url, nested_raw)
@@ -662,19 +694,39 @@ class MediaDetector:
                         if not any(ad in nested_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick"]):
                             if is_valid_media_url(nested_url):
                                 detected_urls.add(nested_url)
-                    # If this player HTML contained an embed/player URL and nothing else was matched, add the player URL
-                    if not detected_urls and ("player" in ifr_low or "embed" in ifr_low or "video" in ifr_low):
-                        detected_urls.add(ifr_url)
+                            else:
+                                # Fetch nested player (depth 2)
+                                try:
+                                    n_resp = requests.get(nested_url, headers={**self.DEFAULT_HEADERS, "Referer": ifr_url}, cookies=cookies or None, timeout=6)
+                                    if n_resp.ok:
+                                        n_html = n_resp.text.replace(r'\/', '/')
+                                        for n_unp in PackerDecoder.find_and_unpack_all(n_html):
+                                            for n_media in extract_media_from_unpacked_js(n_unp):
+                                                if is_valid_media_url(n_media):
+                                                    detected_urls.add(n_media)
+                                        for n_pjs in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', n_html):
+                                            for _, d_u in PlayerjsDecoder.decode_file_string(n_pjs):
+                                                if is_valid_media_url(d_u):
+                                                    detected_urls.add(d_u)
+                                        for n_str in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', n_html, re.IGNORECASE):
+                                            if is_valid_media_url(n_str):
+                                                detected_urls.add(n_str)
+                                except Exception:
+                                    pass
             except Exception:
-                if "player" in ifr_low or "embed" in ifr_low or "video" in ifr_low:
-                    detected_urls.add(ifr_url)
+                pass
 
         # 5. Check Playerjs syntax directly in main HTML
         for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', clean_html):
-            for sub_part in pjs_val.split(','):
-                sub_m = re.search(r'(?:\[([^\]]+)\])?(https?://[^\s,"\'<>]+)', sub_part.strip())
-                if sub_m and is_valid_media_url(sub_m.group(2)):
-                    detected_urls.add(sub_m.group(2))
+            for _, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
+                if is_valid_media_url(decoded_u):
+                    detected_urls.add(decoded_u)
+
+        # 5b. Check unpacked scripts in main HTML
+        for unpacked in PackerDecoder.find_and_unpack_all(clean_html):
+            for m_url in extract_media_from_unpacked_js(unpacked):
+                if is_valid_media_url(m_url):
+                    detected_urls.add(m_url)
 
         # 6. JS configurations and player script links (VideoJS, JWPlayer, Spankbang, FluidPlayer)
         js_patterns = [
@@ -693,12 +745,16 @@ class MediaDetector:
                     detected_urls.add(cand)
 
         if not detected_urls:
+            has_embed = bool(candidate_player_urls)
             return {
                 "success": False,
                 "title": title,
                 "source_url": url,
-                "is_protected": False,
-                "error_message": "No downloadable video stream was detected on this page.",
+                "is_protected": True if has_embed else False,
+                "protection_reason": (
+                    "Stream protected or blocked by site (Cloudflare/Bot/Age check). Tap 'Open in Browser' to play/download."
+                ) if has_embed else "No downloadable video stream was detected on this page.",
+                "has_embed_player": has_embed,
                 "formats": []
             }
 

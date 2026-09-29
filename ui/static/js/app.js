@@ -527,7 +527,7 @@ function renderDownloadsList(items) {
             const meta = document.getElementById(`meta-info-${item.id}`);
             if (meta) {
                 let speedText = (item.status === 'downloading' && item.speed > 0)
-                    ? ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s` : '';
+                    ? ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s <span class="turbo-badge">⚡ Turbo 8x</span>` : '';
                 meta.innerHTML = `${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}`;
             }
         });
@@ -543,7 +543,7 @@ function renderDownloadsList(items) {
 
         let speedText = '';
         if (isDownloading && item.speed > 0) {
-            speedText = ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s`;
+            speedText = ` • ${(item.speed / (1024 * 1024)).toFixed(2)} MB/s <span class="turbo-badge">⚡ Turbo 8x</span>`;
         }
 
         const thumbSrc = getSafeThumbnailUrl(item.thumbnail, item.title);
@@ -1502,31 +1502,83 @@ window.promptCreateNewFolder = promptCreateNewFolder;
 window.requestAllFilesAccess = requestAllFilesAccess;
 window.saveCustomDownloadDir = saveCustomDownloadDir;
 
-// --- In-App Browser ---
+// --- In-App Browser & Proxy Sniffer ---
+let currentSniffedStream = null;
+
 function initBrowser() {
     const goBtn = document.getElementById('btn-browser-go');
     const input = document.getElementById('browser-url-input');
     const iframe = document.getElementById('browser-webview');
     const detectBtn = document.getElementById('btn-browser-detect');
+    const sniffBanner = document.getElementById('browser-sniff-banner');
+    const sniffTitle = document.getElementById('sniff-banner-title');
+    const sniffUrl = document.getElementById('sniff-banner-url');
+    const sniffDlBtn = document.getElementById('btn-browser-sniff-dl');
+    const sniffCloseBtn = document.getElementById('btn-browser-sniff-close');
 
-    if (goBtn && input && iframe) {
-        goBtn.addEventListener('click', () => {
-            let url = input.value.trim();
-            if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
-                url = 'https://' + url;
-            }
-            iframe.src = url;
+    function navigateBrowser(url) {
+        if (!url) return;
+        let target = url.trim();
+        if (!target.startsWith('http://') && !target.startsWith('https://')) {
+            target = 'https://' + target;
+        }
+        if (input) input.value = target;
+        if (sniffBanner) sniffBanner.style.display = 'none';
+        currentSniffedStream = null;
+        if (iframe) {
+            iframe.src = `/api/browser-proxy?url=${encodeURIComponent(target)}`;
+        }
+    }
+
+    if (goBtn && input) {
+        goBtn.addEventListener('click', () => navigateBrowser(input.value));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') navigateBrowser(input.value);
         });
+    }
 
+    if (detectBtn && input) {
         detectBtn.addEventListener('click', () => {
             const url = input.value.trim();
             if (url) {
                 switchTab('home');
-                document.getElementById('url-input').value = url;
+                const mainInput = document.getElementById('url-input');
+                if (mainInput) mainInput.value = url;
                 triggerAnalyze(url);
             }
         });
     }
+
+    if (sniffCloseBtn && sniffBanner) {
+        sniffCloseBtn.addEventListener('click', () => {
+            sniffBanner.style.display = 'none';
+        });
+    }
+
+    if (sniffDlBtn) {
+        sniffDlBtn.addEventListener('click', () => {
+            if (currentSniffedStream) {
+                const streamToDownload = currentSniffedStream;
+                if (sniffBanner) sniffBanner.style.display = 'none';
+                quickAutoDownloadUrl(streamToDownload.url);
+            }
+        });
+    }
+
+    // Global listener for stream detection messages from browser proxy iframe
+    window.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'SNIFFED_STREAM') {
+            const stream = event.data;
+            if (!stream.url) return;
+            currentSniffedStream = stream;
+            if (sniffBanner && sniffTitle && sniffUrl) {
+                sniffTitle.textContent = '⚡ ' + (stream.title || 'Video Stream Detected!');
+                sniffUrl.textContent = stream.url.substring(0, 60) + '...';
+                sniffBanner.style.display = 'flex';
+            }
+            showToast('⚡ Video stream detected! Tap Download in Browser tab.', 3500);
+        }
+    });
 }
 
 function openUrlInBrowser(encodedUrl) {
@@ -1535,8 +1587,11 @@ function openUrlInBrowser(encodedUrl) {
     switchTab('browser');
     const input = document.getElementById('browser-url-input');
     const iframe = document.getElementById('browser-webview');
+    const sniffBanner = document.getElementById('browser-sniff-banner');
+    if (sniffBanner) sniffBanner.style.display = 'none';
+    currentSniffedStream = null;
     if (input) input.value = rawUrl;
-    if (iframe) iframe.src = rawUrl;
+    if (iframe) iframe.src = `/api/browser-proxy?url=${encodeURIComponent(rawUrl)}`;
 }
 window.openUrlInBrowser = openUrlInBrowser;
 window.saveCustomDownloadDir = saveCustomDownloadDir;

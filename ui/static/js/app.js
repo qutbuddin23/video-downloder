@@ -21,6 +21,16 @@ const VIDEO_URL_REGEX = /(https?:\/\/[^\s<>"'`]+)/i;
 
 const DEFAULT_VIDEO_THUMB = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="%236366F1"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v12h16V6H4zm6 2.5l6 3.5-6 3.5v-7z"/></svg>';
 
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
     initUrlAnalyzer();
@@ -278,12 +288,12 @@ function renderVideoPreview(data) {
     data.formats.forEach((fmt, index) => {
         const item = document.createElement('div');
         item.className = `format-item ${index === 0 ? 'selected' : ''}`;
-        const displayLabel = fmt.filename || fmt.quality_label;
+        const displayLabel = fmt.filename || fmt.quality_label || 'Auto';
         const subInfo = fmt.filesize_str ? `${fmt.codec || 'auto'} • ${fmt.filesize_str}` : (fmt.resolution || 'Auto');
         item.innerHTML = `
             <div style="flex:1; min-width:0; overflow:hidden;">
-                <div class="format-label" style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${displayLabel} (${(fmt.ext || 'MP4').toUpperCase()})</div>
-                <div class="format-info">${subInfo}</div>
+                <div class="format-label" style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${escapeHtml(displayLabel)} (${escapeHtml((fmt.ext || 'MP4').toUpperCase())})</div>
+                <div class="format-info">${escapeHtml(subInfo)}</div>
             </div>
             <div style="font-size: 11px; font-weight: bold; color: #818CF8; margin-left:8px; white-space:nowrap;">
                 ${fmt.has_audio && fmt.has_video ? '✓ Video + Audio' : (fmt.has_video ? 'Video' : (fmt.has_audio ? 'Audio Only' : 'File'))}
@@ -548,14 +558,20 @@ function renderDownloadsList(items) {
 
         const thumbSrc = getSafeThumbnailUrl(item.thumbnail, item.title);
         const isNonVideo = /\.(apk|xapk|zip|rar|7z|tar|gz|pdf|doc|docx|xls|xlsx|ppt|pptx|iso|dmg|exe)$/i.test(item.title || '');
+        const safeTitle = escapeHtml(item.title || 'Video');
+        const safeQuality = escapeHtml(item.quality || 'Auto');
+        const safeStatus = escapeHtml(item.status || 'queued');
+        const safeThumb = escapeHtml(thumbSrc);
+        const safeOrigSrc = escapeHtml(item.thumbnail || item.title || '');
+        const safeError = escapeHtml(item.error_message || '');
 
         return `
             <div class="download-item" id="dl-card-${item.id}">
                 <div class="dl-header">
-                    <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || item.title || ''}" />
+                    <img class="dl-thumb" src="${safeThumb}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${safeOrigSrc}" />
                     <div class="dl-info">
-                        <div class="dl-title">${item.title}</div>
-                        <div class="dl-meta" id="meta-info-${item.id}">${item.quality} • Status: <b style="color:#818CF8">${item.status.toUpperCase()}</b>${speedText}</div>
+                        <div class="dl-title">${safeTitle}</div>
+                        <div class="dl-meta" id="meta-info-${item.id}">${safeQuality} • Status: <b style="color:#818CF8">${safeStatus.toUpperCase()}</b>${speedText}</div>
                     </div>
                 </div>
                 ${!isCompleted ? `
@@ -568,7 +584,7 @@ function renderDownloadsList(items) {
                     </div>
                 ` : ''}
                 ${item.status === 'failed' && item.error_message ? `
-                    <div style="font-size:11px; color:#EF4444; margin-top:6px; word-break:break-all;">⚠️ ${item.error_message}</div>
+                    <div style="font-size:11px; color:#EF4444; margin-top:6px; word-break:break-all;">⚠️ ${safeError}</div>
                 ` : ''}
                 <div class="dl-actions">
                     ${isDownloading ? `<button class="btn btn-secondary btn-sm" onclick="pauseDownload('${item.id}')">⏸ Pause</button>` : ''}
@@ -768,13 +784,17 @@ async function loadVaultItems(stats) {
 
         list.innerHTML = items.map(item => {
             const thumbSrc = getSafeThumbnailUrl(item.thumbnail);
+            const safeTitle = escapeHtml(item.title || 'Protected File');
+            const safeFileSize = escapeHtml(item.file_size_str || '');
+            const safeThumb = escapeHtml(thumbSrc);
+            const safeOrigSrc = escapeHtml(item.thumbnail || '');
             return `
                 <div class="download-item" style="border-left: 3px solid #EC4899;">
                     <div class="dl-header">
-                        <img class="dl-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${item.thumbnail || ''}" />
+                        <img class="dl-thumb" src="${safeThumb}" referrerpolicy="no-referrer" onerror="handleThumbnailError(this)" data-orig-src="${safeOrigSrc}" />
                         <div class="dl-info">
-                            <div class="dl-title">🔒 ${item.title}</div>
-                            <div class="dl-meta">${item.file_size_str} • Encrypted AES-256</div>
+                            <div class="dl-title">🔒 ${safeTitle}</div>
+                            <div class="dl-meta">${safeFileSize} • Encrypted AES-256</div>
                         </div>
                     </div>
                     <div class="dl-actions">

@@ -12,6 +12,8 @@ from typing import Dict, Any, List, Optional
 import requests
 from core.storage_manager import format_bytes
 from core.paths import SafeYtdlLogger
+from core.dns_resolver import install_smart_dns
+install_smart_dns()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")

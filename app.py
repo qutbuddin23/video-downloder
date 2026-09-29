@@ -20,6 +20,9 @@ import requests
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
+from core.dns_resolver import install_smart_dns
+install_smart_dns()
+
 from core.paths import (
     get_base_data_dir,
     get_db_path,

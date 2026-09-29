@@ -25,6 +25,9 @@ from core.turbo_downloader import TurboSegmentedDownloader
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*Support for Python version.*deprecated.*")
 
+from core.dns_resolver import install_smart_dns
+install_smart_dns()
+
 
 class SafeStreamWrapper:
     """Wraps sys.stdout / sys.stderr so any .write() or .flush() calls never crash."""
@@ -543,8 +546,8 @@ class DownloadTask:
                 return
 
             # Strategy 3: HLS / DASH stream manifests (.m3u8, .mpd) -> must use streaming engine
-            clean_direct = (self.direct_url or "").split("?")[0].lower()
-            clean_url = (self.url or "").split("?")[0].lower()
+            clean_direct = (self.direct_url or "").strip().split("#")[0].split("?")[0].rstrip("/").lower()
+            clean_url = (self.url or "").strip().split("#")[0].split("?")[0].rstrip("/").lower()
             is_hls = clean_direct.endswith(".m3u8") or clean_direct.endswith(".mpd") or clean_url.endswith(".m3u8") or clean_url.endswith(".mpd")
             if is_hls:
                 self._download_via_ytdlp(override_url=self.direct_url or self.url)

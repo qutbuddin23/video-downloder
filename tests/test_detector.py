@@ -143,3 +143,45 @@ def test_direct_media_url_fast_path():
     assert res["formats"][0]["direct_url"] == direct_mp4
     assert res["formats"][0]["ext"] == "mp4"
 
+
+def test_trailing_slash_media_urls_and_sources():
+    from core.detector import is_valid_media_url, is_direct_download_url
+    detector = MediaDetector()
+
+    # URLs with trailing slashes must be recognized as valid media URLs
+    assert is_valid_media_url("https://cdn.example.com/videos/93767542_2160m.mp4/") is True
+    assert is_valid_media_url("https://cdn.example.com/videos/93767542_720m.mp4/") is True
+    assert is_valid_media_url("https://cdn.example.com/streams/live.m3u8/") is True
+    assert is_direct_download_url("https://cdn.example.com/videos/test.mp4/") is True
+
+    # Test sniffing of <source> tags with labels and trailing slashes
+    sample_html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>High Quality Video</title></head>
+    <body>
+        <video id="player">
+            <source src="https://cdn.example.com/get_file/93767542_2160m.mp4/" type="video/mp4" label="2160p">
+            <source src="https://cdn.example.com/get_file/93767542_720m.mp4/" type="video/mp4" label="720p" selected="true">
+            <source src="https://cdn.example.com/get_file/93767542_480m.mp4/" type="video/mp4" label="480p">
+        </video>
+    </body>
+    </html>
+    """
+    mock_resp = MagicMock()
+    mock_resp.text = sample_html
+    mock_resp.status_code = 200
+
+    with patch("requests.get", return_value=mock_resp):
+        res = detector._sniff_webpage("https://example.com/video/123")
+        assert res["success"] is True
+        assert res["detected_count"] == 3
+        # Ensure 2160p 4K UHD and 720p HD labels exist
+        labels = [f["quality_label"] for f in res["formats"]]
+        assert any("2160p 4K" in lbl for lbl in labels)
+        assert any("720p HD" in lbl for lbl in labels)
+        assert any("480p SD" in lbl for lbl in labels)
+        # Formats should prioritize highest quality / selected
+        assert res["formats"][0]["height"] in (2160, 720)
+
+

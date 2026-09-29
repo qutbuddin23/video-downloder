@@ -34,7 +34,9 @@ DIRECT_DOWNLOAD_EXTS = (
 
 def is_direct_download_url(url: str) -> bool:
     """Checks whether URL directly references a raw media file, archive, installer, or document."""
-    clean = url.split("?")[0].lower()
+    if not url or not isinstance(url, str):
+        return False
+    clean = url.strip().split("#")[0].split("?")[0].rstrip("/").lower()
     return any(clean.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS)
 
 
@@ -67,7 +69,8 @@ def is_valid_media_url(u: str) -> bool:
     if is_mega_url(u_strip) or is_terabox_url(u_strip):
         return True
 
-    clean_u = u_strip.split("?")[0].lower()
+    # Strip fragments, query params, and trailing slashes for accurate extension matching
+    clean_u = u_strip.split("#")[0].split("?")[0].rstrip("/").lower()
     disallowed = (
         ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
         ".css", ".js", ".json", ".xml", ".html", ".htm", ".txt",
@@ -84,7 +87,7 @@ def is_valid_media_url(u: str) -> bool:
     if any(clean_u.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS):
         return True
 
-    # If no file extension, verify if it has clear media signatures in query or path
+    # If no direct file extension, verify if it has clear media signatures in query or path
     media_signatures = (
         "mime=video", "mime=audio", "content_type=video", "content_type=audio",
         "/videoplayback", "videoplayback?", "playlist.m3u8", "master.m3u8",
@@ -612,22 +615,59 @@ class MediaDetector:
                 if not cand_thumb.lower().endswith(".svg"):
                     thumbnail = cand_thumb
 
-        detected_urls = set()
+        stream_candidates = {}
+
+        def _extract_res_from_str(s: str) -> int:
+            if not s:
+                return 0
+            m = re.search(r'\b(4320|2160|1440|1080|720|540|480|360|240)p?\b', s, re.I)
+            if m:
+                return int(m.group(1))
+            m2 = re.search(r'[_/-](2160|1440|1080|720|540|480|360|240)[a-z0-9_./-]*', s.lower())
+            if m2:
+                return int(m2.group(1))
+            return 0
+
+        def _add_candidate(cand_url: str, label: str = "", height: int = 0, selected: bool = False):
+            if not cand_url or not is_valid_media_url(cand_url):
+                return
+            cand_url = cand_url.strip()
+            if not height:
+                height = _extract_res_from_str(label) or _extract_res_from_str(cand_url)
+            if cand_url in stream_candidates:
+                prev = stream_candidates[cand_url]
+                if not prev.get("label") and label:
+                    prev["label"] = label
+                if not prev.get("height") and height:
+                    prev["height"] = height
+                if selected:
+                    prev["selected"] = True
+            else:
+                stream_candidates[cand_url] = {
+                    "url": cand_url,
+                    "label": label,
+                    "height": height,
+                    "selected": selected
+                }
 
         # 1. HTML5 <video> tags
-        for v in re.finditer(r'<video[^>]+src=["\']([^"\']+)["\']', clean_html, re.IGNORECASE):
+        for v in re.finditer(r'<video\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', clean_html, re.IGNORECASE):
             cand = urllib.parse.urljoin(url, v.group(1))
-            if is_valid_media_url(cand):
-                detected_urls.add(cand)
+            h = _extract_res_from_str(v.group(0)) or _extract_res_from_str(cand)
+            _add_candidate(cand, height=h)
 
-        # 2. <source> tags strictly for video/audio (ignore picture/srcset/svg)
+        # 2. <source> tags strictly for video/audio (capture label, res, selected)
         for s in re.finditer(r'<source\s+[^>]*src=["\']([^"\']+)["\'][^>]*>', clean_html, re.IGNORECASE):
-            full_tag = s.group(0).lower()
-            if "image/" in full_tag or "srcset" in full_tag:
+            full_tag = s.group(0)
+            tag_low = full_tag.lower()
+            if "image/" in tag_low or "srcset" in tag_low:
                 continue
             cand = urllib.parse.urljoin(url, s.group(1))
-            if is_valid_media_url(cand):
-                detected_urls.add(cand)
+            lbl_m = re.search(r'(?:label|res|data-quality|title)=["\']([^"\']+)["\']', full_tag, re.I)
+            lbl = lbl_m.group(1).strip() if lbl_m else ""
+            h = _extract_res_from_str(lbl) or _extract_res_from_str(cand)
+            is_sel = "selected" in tag_low
+            _add_candidate(cand, label=lbl, height=h, selected=is_sel)
 
         # 3. Meta tags (OpenGraph / Twitter card video)
         for meta_name in ["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"]:
@@ -636,8 +676,7 @@ class MediaDetector:
                 m = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(meta_name)}["\']', clean_html, re.IGNORECASE)
             if m and m.group(1):
                 cand = urllib.parse.urljoin(url, m.group(1))
-                if is_valid_media_url(cand):
-                    detected_urls.add(cand)
+                _add_candidate(cand)
 
         # 4. Embedded players, iframes, and JSON-LD video URLs
         candidate_player_urls = set()
@@ -655,12 +694,12 @@ class MediaDetector:
             ifr_low = ifr_url.lower()
             if any(ad in ifr_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick", "googleads", "doubleclick"]):
                 continue
-            if any(ifr_low.split("?")[0].endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".css", ".js"]):
+            if any(ifr_low.split("?")[0].rstrip("/").endswith(ext) for ext in [".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".css", ".js"]):
                 continue
 
             # If it's directly a video stream format
             if is_valid_media_url(ifr_url):
-                detected_urls.add(ifr_url)
+                _add_candidate(ifr_url)
                 continue
 
             # Otherwise, fetch the embedded player page
@@ -672,19 +711,17 @@ class MediaDetector:
                     # 1. Unpack Dean Edwards packed JavaScript (eval(function(p,a,c,k,e,d)...))
                     for unpacked in PackerDecoder.find_and_unpack_all(ifr_html):
                         for m_url in extract_media_from_unpacked_js(unpacked):
-                            if is_valid_media_url(m_url):
-                                detected_urls.add(m_url)
+                            _add_candidate(m_url)
 
                     # 2. Check Playerjs syntax: file: "[720]url,[360]url" or file: "url"
                     for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', ifr_html):
-                        for _, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
-                            if is_valid_media_url(decoded_u):
-                                detected_urls.add(decoded_u)
+                        for pjs_q, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
+                            h = _extract_res_from_str(pjs_q)
+                            _add_candidate(decoded_u, label=f"{pjs_q}p" if pjs_q else "", height=h)
 
                     # 3. Scan for direct media streams
-                    for sub_m in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', ifr_html, re.IGNORECASE):
-                        if is_valid_media_url(sub_m):
-                            detected_urls.add(sub_m)
+                    for sub_m in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:/[^\s"\'<>]*)?', ifr_html, re.IGNORECASE):
+                        _add_candidate(sub_m)
 
                     # 4. Scan for nested iframes (depth 2) e.g. nmcorp, doodstream, streamtape, mixdrop
                     for nested_m in re.finditer(r'<iframe\s+[^>]*(?:src|data-src)=["\']([^"\']+)["\']', ifr_html, re.IGNORECASE):
@@ -693,7 +730,7 @@ class MediaDetector:
                         nested_low = nested_url.lower()
                         if not any(ad in nested_low for ad in ["adserver", "adtng", "popcash", "adsterra", "syndication", "exoclick"]):
                             if is_valid_media_url(nested_url):
-                                detected_urls.add(nested_url)
+                                _add_candidate(nested_url)
                             else:
                                 # Fetch nested player (depth 2)
                                 try:
@@ -702,15 +739,12 @@ class MediaDetector:
                                         n_html = n_resp.text.replace(r'\/', '/')
                                         for n_unp in PackerDecoder.find_and_unpack_all(n_html):
                                             for n_media in extract_media_from_unpacked_js(n_unp):
-                                                if is_valid_media_url(n_media):
-                                                    detected_urls.add(n_media)
+                                                _add_candidate(n_media)
                                         for n_pjs in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', n_html):
-                                            for _, d_u in PlayerjsDecoder.decode_file_string(n_pjs):
-                                                if is_valid_media_url(d_u):
-                                                    detected_urls.add(d_u)
-                                        for n_str in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:\?[^\s"\'<>]*)?', n_html, re.IGNORECASE):
-                                            if is_valid_media_url(n_str):
-                                                detected_urls.add(n_str)
+                                            for n_q, d_u in PlayerjsDecoder.decode_file_string(n_pjs):
+                                                _add_candidate(d_u, height=_extract_res_from_str(n_q))
+                                        for n_str in re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mpd)(?:/[^\s"\'<>]*)?', n_html, re.IGNORECASE):
+                                            _add_candidate(n_str)
                                 except Exception:
                                     pass
             except Exception:
@@ -718,23 +752,21 @@ class MediaDetector:
 
         # 5. Check Playerjs syntax directly in main HTML
         for pjs_val in re.findall(r'file\s*:\s*["\']([^"\']+)["\']', clean_html):
-            for _, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
-                if is_valid_media_url(decoded_u):
-                    detected_urls.add(decoded_u)
+            for pjs_q, decoded_u in PlayerjsDecoder.decode_file_string(pjs_val):
+                _add_candidate(decoded_u, height=_extract_res_from_str(pjs_q))
 
         # 5b. Check unpacked scripts in main HTML
         for unpacked in PackerDecoder.find_and_unpack_all(clean_html):
             for m_url in extract_media_from_unpacked_js(unpacked):
-                if is_valid_media_url(m_url):
-                    detected_urls.add(m_url)
+                _add_candidate(m_url)
 
-        # 6. JS configurations and player script links (VideoJS, JWPlayer, Spankbang, FluidPlayer)
+        # 6. JS configurations, KVS player vars, and streaming patterns
         js_patterns = [
-            r'["\']?(?:file|src|url|video_url|video_alt_url|stream_url|source|streamUrl|videoUrl|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
-            r'["\']?(?:1080p|720p|480p|360p|240p|high|med|low)["\']?\s*[:=]\s*["\']([^"\'\s]+\.(?:m3u8|mpd|mp4|webm|mkv)[^"\'\s]*)["\']',
+            r'["\']?(?:video_url|video_alt_url\d*|videoUrl\d*|stream_url\d*|file\d*|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+)["\']',
+            r'["\']?(?:1080p|720p|480p|360p|240p|high|med|low)["\']?\s*[:=]\s*["\']([^"\'\s]+)["\']',
             r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?',
             r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?',
-            r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:\?[^\s"\'<>]*)?'
+            r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:/[^\s"\'<>]*)?'
         ]
         for pat in js_patterns:
             for match in re.findall(pat, clean_html, re.IGNORECASE):
@@ -742,9 +774,9 @@ class MediaDetector:
                     match = match[0]
                 cand = urllib.parse.urljoin(url, match)
                 if is_valid_media_url(cand):
-                    detected_urls.add(cand)
+                    _add_candidate(cand)
 
-        if not detected_urls:
+        if not stream_candidates:
             has_embed = bool(candidate_player_urls)
             return {
                 "success": False,
@@ -758,41 +790,57 @@ class MediaDetector:
                 "formats": []
             }
 
-        # Stream prioritization: prioritize full video streams and HLS over trailers/previews
-        def _stream_priority(u: str) -> int:
+        # Stream prioritization: prioritize higher resolution and selected streams
+        def _stream_priority(cand_info: dict) -> int:
+            u = cand_info["url"]
             u_low = u.lower()
             score = 100
+            if cand_info.get("selected"):
+                score += 40
             if any(p in u_low for p in ["trailer", "preview", "sample", "intro", "thumb", "teaser", "snippet"]):
                 score -= 60
-            if ".m3u8" in u_low:
+            h = cand_info.get("height", 0)
+            if h:
+                score += h // 10
+            elif ".m3u8" in u_low:
                 score += 35
-            if "1080" in u_low:
-                score += 25
-            elif "720" in u_low:
-                score += 20
-            elif "480" in u_low:
-                score += 15
             elif ".mp4" in u_low:
-                score += 10
+                score += 20
             return score
 
-        sorted_urls = sorted(detected_urls, key=_stream_priority, reverse=True)
+        sorted_candidates = sorted(stream_candidates.values(), key=_stream_priority, reverse=True)
 
-        # Build formats from sorted detected URLs
+        # Build formats from sorted detected candidates
         formats = []
-        for i, media_url in enumerate(sorted_urls):
-            clean_url = media_url.split("?")[0].lower()
+        for i, item in enumerate(sorted_candidates):
+            media_url = item["url"]
+            clean_url = media_url.split("#")[0].split("?")[0].rstrip("/").lower()
             ext = "m3u8" if clean_url.endswith(".m3u8") else ("mpd" if clean_url.endswith(".mpd") else "mp4")
-            label = f"Stream {i+1} ({ext.upper()})"
+            h = item.get("height", 0)
+            custom_lbl = item.get("label", "")
+
+            if h >= 2160:
+                q_label = f"{h}p 4K UHD ({ext.upper()})"
+            elif h >= 1080:
+                q_label = f"{h}p Full HD ({ext.upper()})"
+            elif h >= 720:
+                q_label = f"{h}p HD ({ext.upper()})"
+            elif h > 0:
+                q_label = f"{h}p SD ({ext.upper()})"
+            elif custom_lbl:
+                q_label = f"{custom_lbl} ({ext.upper()})"
+            else:
+                q_label = f"Stream {i+1} ({ext.upper()})"
+
             formats.append({
                 "format_id": f"sniffed_{i}",
-                "quality_label": label,
-                "resolution": "Native Stream",
-                "height": 720,
+                "quality_label": q_label,
+                "resolution": f"{h}p" if h > 0 else "Native Stream",
+                "height": h if h > 0 else 720,
                 "ext": "mp4" if ext in ["m3u8", "mpd"] else ext,
                 "codec": "h264/aac",
                 "filesize": 0,
-                "filesize_str": "Stream",
+                "filesize_str": f"{h}p Stream" if h > 0 else "Stream",
                 "has_audio": True,
                 "has_video": True,
                 "direct_url": media_url,

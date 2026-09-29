@@ -689,7 +689,7 @@ class DownloadTask:
         if not target_url:
             raise ValueError("No download URL provided.")
 
-        clean_target = (target_url or "").split("?")[0].lower()
+        clean_target = (target_url or "").strip().split("#")[0].split("?")[0].rstrip("/").lower()
         ext = "mp4"
         for candidate in DIRECT_DOWNLOAD_EXTS:
             if clean_target.endswith(candidate):
@@ -709,7 +709,7 @@ class DownloadTask:
         referer_candidates = []
         if custom_referer:
             referer_candidates.append(custom_referer)
-        if self.url and not any((self.url.split("?")[0].lower()).endswith(e) for e in DIRECT_DOWNLOAD_EXTS):
+        if self.url and not any((self.url.strip().split("#")[0].split("?")[0].rstrip("/").lower()).endswith(e) for e in DIRECT_DOWNLOAD_EXTS):
             referer_candidates.append(self.url)
             try:
                 parts = urllib.parse.urlsplit(self.url)

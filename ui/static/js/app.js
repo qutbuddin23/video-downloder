@@ -1504,8 +1504,13 @@ window.saveCustomDownloadDir = saveCustomDownloadDir;
 
 // --- In-App Browser & Proxy Sniffer ---
 let currentSniffedStream = null;
+let browserHistory = [];
+let browserHistoryIdx = -1;
 
 function initBrowser() {
+    const backBtn = document.getElementById('btn-browser-back');
+    const forwardBtn = document.getElementById('btn-browser-forward');
+    const refreshBtn = document.getElementById('btn-browser-refresh');
     const goBtn = document.getElementById('btn-browser-go');
     const input = document.getElementById('browser-url-input');
     const iframe = document.getElementById('browser-webview');
@@ -1516,7 +1521,7 @@ function initBrowser() {
     const sniffDlBtn = document.getElementById('btn-browser-sniff-dl');
     const sniffCloseBtn = document.getElementById('btn-browser-sniff-close');
 
-    function navigateBrowser(url) {
+    function navigateBrowser(url, recordHistory = true) {
         if (!url) return;
         let target = url.trim();
         if (!target.startsWith('http://') && !target.startsWith('https://')) {
@@ -1525,9 +1530,53 @@ function initBrowser() {
         if (input) input.value = target;
         if (sniffBanner) sniffBanner.style.display = 'none';
         currentSniffedStream = null;
+
+        if (recordHistory) {
+            if (browserHistoryIdx < browserHistory.length - 1) {
+                browserHistory = browserHistory.slice(0, browserHistoryIdx + 1);
+            }
+            browserHistory.push(target);
+            browserHistoryIdx = browserHistory.length - 1;
+        }
+
         if (iframe) {
             iframe.src = `/api/browser-proxy?url=${encodeURIComponent(target)}`;
         }
+    }
+
+    if (backBtn) {
+        backBtn.addEventListener('click', () => {
+            if (browserHistoryIdx > 0) {
+                browserHistoryIdx--;
+                const prev = browserHistory[browserHistoryIdx];
+                navigateBrowser(prev, false);
+            } else {
+                showToast('Already at the oldest page in browser history.');
+            }
+        });
+    }
+
+    if (forwardBtn) {
+        forwardBtn.addEventListener('click', () => {
+            if (browserHistoryIdx < browserHistory.length - 1) {
+                browserHistoryIdx++;
+                const nxt = browserHistory[browserHistoryIdx];
+                navigateBrowser(nxt, false);
+            } else {
+                showToast('Already at the newest page in browser history.');
+            }
+        });
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            const current = (input && input.value) ? input.value.trim() : '';
+            if (current) {
+                navigateBrowser(current, false);
+            } else if (iframe && iframe.src) {
+                iframe.src = iframe.src;
+            }
+        });
     }
 
     if (goBtn && input) {
@@ -1565,9 +1614,25 @@ function initBrowser() {
         });
     }
 
-    // Global listener for stream detection messages from browser proxy iframe
+    // Global listener for stream detection and navigation events from browser proxy iframe
     window.addEventListener('message', (event) => {
-        if (event.data && event.data.type === 'SNIFFED_STREAM') {
+        if (!event.data) return;
+
+        if (event.data.type === 'BROWSER_NAVIGATED' && event.data.url) {
+            const newUrl = event.data.url;
+            if (input && newUrl) {
+                input.value = newUrl;
+                if (browserHistory[browserHistoryIdx] !== newUrl) {
+                    if (browserHistoryIdx < browserHistory.length - 1) {
+                        browserHistory = browserHistory.slice(0, browserHistoryIdx + 1);
+                    }
+                    browserHistory.push(newUrl);
+                    browserHistoryIdx = browserHistory.length - 1;
+                }
+            }
+        }
+
+        if (event.data.type === 'SNIFFED_STREAM') {
             const stream = event.data;
             if (!stream.url) return;
             currentSniffedStream = stream;
@@ -1591,7 +1656,14 @@ function openUrlInBrowser(encodedUrl) {
     if (sniffBanner) sniffBanner.style.display = 'none';
     currentSniffedStream = null;
     if (input) input.value = rawUrl;
-    if (iframe) iframe.src = `/api/browser-proxy?url=${encodeURIComponent(rawUrl)}`;
+    if (iframe) {
+        if (browserHistoryIdx < browserHistory.length - 1) {
+            browserHistory = browserHistory.slice(0, browserHistoryIdx + 1);
+        }
+        browserHistory.push(rawUrl);
+        browserHistoryIdx = browserHistory.length - 1;
+        iframe.src = `/api/browser-proxy?url=${encodeURIComponent(rawUrl)}`;
+    }
 }
 window.openUrlInBrowser = openUrlInBrowser;
 window.saveCustomDownloadDir = saveCustomDownloadDir;

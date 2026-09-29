@@ -11,6 +11,7 @@ import time
 import mimetypes
 import threading
 import urllib.parse
+import re
 import warnings
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any
@@ -354,7 +355,9 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 if req_range:
                     headers["Range"] = req_range
 
-                resp = requests.get(stream_url, headers=headers, stream=True, timeout=15)
+                from core.detector import MediaDetector
+                cookies = MediaDetector.get_cookies_for_url(stream_url)
+                resp = requests.get(stream_url, headers=headers, cookies=cookies or None, stream=True, timeout=15, allow_redirects=True)
                 self.send_response(resp.status_code)
                 for h in ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]:
                     if h in resp.headers:
@@ -426,15 +429,55 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 if "text/html" in c_type or "application/xhtml" in c_type:
                     raw_html = resp.text
 
+                    # Ad Blocker: Filter known intrusive ad networks, trackers, and popup scripts
+                    ad_domains = (
+                        "exoclick", "adtng", "popcash", "adsterra", "trafficjunky", "juicyads",
+                        "doubleclick", "google-analytics", "googletagmanager", "syndication",
+                        "realsrv", "ero-advertising", "propellerads", "adxad", "clckr", "adclick",
+                        "tsyndicate", "etahub", "twinrdsrv", "chaturbate", "adform", "scorecardresearch",
+                        "outbrain", "taboola", "mgid", "yadro", "zergnet", "histats", "popads",
+                        "bet365", "1xbet", "parimatch", "onclkds", "adnxs", "bidswitch", "smartadserver"
+                    )
+                    ad_pattern = "|".join(ad_domains)
+                    clean_html = re.sub(rf'<script[^>]+src=["\'][^"\']*(?:{ad_pattern})[^"\']*["\'][^>]*>.*?</script>', '', raw_html, flags=re.I | re.S)
+                    clean_html = re.sub(rf'<script[^>]+src=["\'][^"\']*(?:{ad_pattern})[^"\']*["\'][^>]*/>', '', clean_html, flags=re.I)
+                    clean_html = re.sub(rf'<iframe[^>]+src=["\'][^"\']*(?:{ad_pattern})[^"\']*["\'][^>]*>.*?</iframe>', '', clean_html, flags=re.I | re.S)
+                    clean_html = re.sub(rf'<iframe[^>]+src=["\'][^"\']*(?:{ad_pattern})[^"\']*["\'][^>]*/>', '', clean_html, flags=re.I)
+
                     sniffer_script = f"""
 <base href="{final_target}">
+<style>
+/* Built-in In-App AdBlocker & Anti-Popup Styles */
+.ad, .ads, .ad-banner, .advertisement, [id*="ad-"], [id*="ad_"], [class*="popup"],
+[class*="overlay-ad"], [id*="banner-ad"], [class*="banner-ad"], a[href*="doubleclick"],
+a[href*="exoclick"], a[href*="popcash"], a[href*="adsterra"], a[href*="trafficjunky"],
+div[style*="position: fixed"][style*="z-index: 9999"],
+div[style*="position:fixed"][style*="z-index:9999"],
+div[style*="position: fixed"][style*="z-index: 99999"],
+div[style*="position:fixed"][style*="z-index:99999"] {{
+    display: none !important;
+    pointer-events: none !important;
+    opacity: 0 !important;
+}}
+</style>
 <script>
 (function() {{
+    // 1. Neuter popups and malicious window open calls
+    try {{
+        window.open = function(url, target, features) {{
+            console.log('[AdBlock] Blocked popup window.open:', url);
+            return null;
+        }};
+    }} catch(e) {{}}
+
+    // 2. Report media streams to parent app
     function report(mediaUrl) {{
         if (!mediaUrl || typeof mediaUrl !== 'string') return;
         var u = mediaUrl.trim();
         if (u.indexOf('data:') === 0 || u.indexOf('blob:') === 0) return;
-        if (u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1 || u.indexOf('.mp4') !== -1 || u.indexOf('.webm') !== -1 || u.indexOf('/video/') !== -1 || u.indexOf('/stream/') !== -1) {{
+        var clean = u.split('?')[0].toLowerCase();
+        if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) return;
+        if (u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1 || u.indexOf('.mp4') !== -1 || u.indexOf('.webm') !== -1 || u.indexOf('/video/') !== -1 || u.indexOf('/stream/') !== -1 || u.indexOf('/get_file/') !== -1) {{
             try {{
                 window.parent.postMessage({{
                     type: 'SNIFFED_STREAM',
@@ -445,6 +488,27 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             }} catch(e) {{}}
         }}
     }}
+
+    // 3. Scan existing DOM media tags
+    function scanExistingMedia() {{
+        try {{
+            var media = document.querySelectorAll('video, audio, source');
+            for (var i = 0; i < media.length; i++) {{
+                var el = media[i];
+                if (el.src) report(el.src);
+                if (el.currentSrc) report(el.currentSrc);
+                if (el.getAttribute('data-src')) report(el.getAttribute('data-src'));
+            }}
+        }} catch(e) {{}}
+    }}
+    if (document.readyState === 'loading') {{
+        document.addEventListener('DOMContentLoaded', scanExistingMedia);
+    }} else {{
+        scanExistingMedia();
+    }}
+    setInterval(scanExistingMedia, 2500);
+
+    // 4. Hook MediaElement.play
     try {{
         var origPlay = HTMLMediaElement.prototype.play;
         HTMLMediaElement.prototype.play = function() {{
@@ -453,6 +517,8 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return origPlay.apply(this, arguments);
         }};
     }} catch(e) {{}}
+
+    // 5. Hook window.fetch
     try {{
         var origFetch = window.fetch;
         window.fetch = function(input, init) {{
@@ -461,6 +527,8 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return origFetch.apply(this, arguments);
         }};
     }} catch(e) {{}}
+
+    // 6. Hook XMLHttpRequest.open
     try {{
         var origOpen = XMLHttpRequest.prototype.open;
         XMLHttpRequest.prototype.open = function(method, url) {{
@@ -468,13 +536,49 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             return origOpen.apply(this, arguments);
         }};
     }} catch(e) {{}}
+
+    // 7. Route clicked links inside in-app browser proxy & block ad clicks
+    var adKws = ['exoclick', 'adtng', 'popcash', 'adsterra', 'trafficjunky', 'juicyads', 'syndication', 'realsrv', 'propellerads', 'adclick', 'tsyndicate', 'chaturbate'];
+    document.addEventListener('click', function(e) {{
+        var a = e.target.closest('a');
+        if (!a || !a.href) return;
+        var href = a.href;
+        var hrefLow = href.toLowerCase();
+        if (hrefLow.indexOf('javascript:') === 0 || hrefLow.indexOf('#') === 0) return;
+
+        // Block known ad network clicks
+        for (var k = 0; k < adKws.length; k++) {{
+            if (hrefLow.indexOf(adKws[k]) !== -1) {{
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[AdBlock] Blocked ad link click:', href);
+                return false;
+            }}
+        }}
+
+        // Disarm target="_blank"
+        a.removeAttribute('target');
+
+        // Route within in-app browser proxy
+        e.preventDefault();
+        e.stopPropagation();
+        try {{
+            window.parent.postMessage({{ type: 'BROWSER_NAVIGATED', url: href }}, '*');
+        }} catch(_) {{}}
+        window.location.href = '/api/browser-proxy?url=' + encodeURIComponent(href);
+    }}, true);
+
+    // Notify parent of initial load
+    try {{
+        window.parent.postMessage({{ type: 'BROWSER_NAVIGATED', url: '{final_target}' }}, '*');
+    }} catch(e) {{}}
 }})();
 </script>
 """
-                    if "<head>" in raw_html.lower():
-                        injected_html = re.sub(r'(<head[^>]*>)', r'\1' + sniffer_script, raw_html, count=1, flags=re.I)
+                    if "<head>" in clean_html.lower():
+                        injected_html = re.sub(r'(<head[^>]*>)', r'\1' + sniffer_script, clean_html, count=1, flags=re.I)
                     else:
-                        injected_html = sniffer_script + raw_html
+                        injected_html = sniffer_script + clean_html
 
                     body = injected_html.encode("utf-8", errors="replace")
                     self.send_response(200)

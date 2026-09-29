@@ -250,6 +250,45 @@ def test_storage_create_dir_and_permission():
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_browser_proxy_adblock_and_injection():
+    from unittest.mock import patch, MagicMock
+
+    sample_html = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Tube Video Site</title></head>
+    <body>
+        <script src="https://syndication.exoclick.com/splash.php?id=123"></script>
+        <script src="https://popcash.net/pop.js"></script>
+        <iframe src="https://adsterra.com/banner.html"></iframe>
+        <h1>Real Content</h1>
+        <video src="https://cdn.example.com/video.mp4"></video>
+    </body>
+    </html>
+    """
+
+    mock_resp = MagicMock()
+    mock_resp.text = sample_html
+    mock_resp.url = "https://tubesite.com/watch/123"
+    mock_resp.status_code = 200
+    mock_resp.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+    with patch("app.requests.get", return_value=mock_resp):
+        status, html = make_request("/api/browser-proxy?url=https://tubesite.com/watch/123")
+        assert status == 200
+        # Verify aggressive ad network scripts/iframes are stripped
+        assert "syndication.exoclick.com" not in html
+        assert "popcash.net" not in html
+        assert "adsterra.com" not in html
+        # Verify legitimate content is preserved
+        assert "Real Content" in html
+        # Verify anti-popup killer and adblock styles are injected
+        assert "[AdBlock] Blocked popup window.open" in html
+        assert "BROWSER_NAVIGATED" in html
+        assert "SNIFFED_STREAM" in html
+
+
+
 
 
 

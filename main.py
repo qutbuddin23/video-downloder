@@ -70,7 +70,7 @@ try:
             Clock.schedule_once(_set, 0)
 
         def request_app_permissions(self, *args):
-            """Show native Android runtime permission prompts (storage, battery optimization, notifications)."""
+            """Show native Android runtime permission prompts (storage and notifications)."""
             try:
                 from android.permissions import request_permissions
                 from android.runnable import run_on_ui_thread
@@ -89,29 +89,6 @@ try:
                     except Exception as pe:
                         print(f"[Android Launcher] Permission prompt notice: {pe}")
 
-                    # Request Battery Optimization exemption on Android 6.0+ (API 23+)
-                    # so screen-off background downloads are never killed by OEM battery savers
-                    try:
-                        from jnius import autoclass
-                        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                        activity = PythonActivity.mActivity
-                        if activity:
-                            Context = autoclass("android.content.Context")
-                            PowerManager = autoclass("android.os.PowerManager")
-                            Intent = autoclass("android.content.Intent")
-                            Uri = autoclass("android.net.Uri")
-                            Settings = autoclass("android.provider.Settings")
-                            pm = activity.getSystemService(Context.POWER_SERVICE)
-                            pkg = activity.getPackageName()
-                            if pm and hasattr(pm, "isIgnoringBatteryOptimizations"):
-                                if not pm.isIgnoringBatteryOptimizations(pkg):
-                                    intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                                    intent.setData(Uri.parse(f"package:{pkg}"))
-                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    activity.startActivity(intent)
-                                    print("[Android Launcher] Requested ignore battery optimizations.")
-                    except Exception as be:
-                        print(f"[Android Launcher] Battery optimization request notice: {be}")
                 _do_ask()
             except Exception as e:
                 print(f"[Android Launcher] Permissions module notice: {e}")

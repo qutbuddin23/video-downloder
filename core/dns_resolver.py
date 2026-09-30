@@ -23,17 +23,9 @@ _DNS_CACHE: Dict[str, str] = {
     "d237157.fpvcdn.com": "50.7.252.210",
 }
 
-# Domains where ISP DPI blocks connection when SNI is present in TLS ClientHello
+# Domains where direct CDN video servers support SNI-less TLS to bypass ISP DPI
 SNI_SENSITIVE_DOMAINS = (
     "fpvcdn.com",
-    "freepornvideos.xxx",
-    "yamyhub.com",
-    "you-porn.com",
-    "youporn.com",
-    "xhamster.com",
-    "pornhub.com",
-    "redtube.com",
-    "spankbang.com",
 )
 
 # Reliable authoritative and public DNS servers

@@ -325,7 +325,19 @@ class MediaDetector:
             print(f"[Detector] Direct HTTP probe notice: {probe_err}")
 
         # 6. Fallback: Deep DOM & Network sniffer
-        return self._sniff_webpage(url)
+        result = self._sniff_webpage(url)
+        if result.get("success"):
+            return result
+
+        # 7. ULTIMATE fallback: Playwright headless browser (solves Cloudflare JS challenges)
+        try:
+            browser_result = self._browser_sniff(url)
+            if browser_result.get("success"):
+                return browser_result
+        except Exception as bse:
+            print(f"[Detector] Browser sniff error: {bse}")
+
+        return result
 
     def _process_ytdlp_info(self, info: Dict[str, Any], original_url: str) -> Dict[str, Any]:
         """Formats yt-dlp metadata into a clean, unified structure."""
@@ -930,3 +942,158 @@ class MediaDetector:
             "formats": formats,
             "detected_count": len(formats)
         }
+
+    def _browser_sniff(self, url: str) -> Dict[str, Any]:
+        """
+        Ultimate fallback: uses Playwright headless Chromium to bypass Cloudflare
+        JS challenges and extract video URLs from fully-rendered pages.
+        Only used when all other detection methods fail (403/503 from Cloudflare).
+        """
+        print(f"[Detector] Launching headless browser for Cloudflare bypass: {url}")
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("[Detector] Playwright not installed — skipping browser sniff")
+            return {"success": False, "formats": []}
+
+        media_urls = set()
+
+        def _on_response(response):
+            """Capture video URLs from network traffic."""
+            try:
+                resp_url = response.url
+                low = resp_url.lower()
+                if any(ext in low for ext in ['.mp4', '.m3u8', '.mpd', '.webm', '.mkv', '.ts']):
+                    if response.status in (200, 206, 301, 302):
+                        media_urls.add(resp_url)
+                ct = response.headers.get('content-type', '').lower()
+                if any(t in ct for t in ['video/', 'application/vnd.apple', 'application/dash', 'application/x-mpegurl']):
+                    media_urls.add(resp_url)
+            except Exception:
+                pass
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+                page = ctx.new_page()
+                page.on("response", _on_response)
+
+                page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                # Wait for Cloudflare challenge to resolve + page JS to load video player
+                page.wait_for_timeout(10000)
+
+                html = page.content()
+                page_title = page.title() or ""
+
+                # Save cookies from browser session for future requests
+                try:
+                    domain = urllib.parse.urlsplit(url).netloc.lower()
+                    browser_cookies = ctx.cookies()
+                    cookie_dict = {c["name"]: c["value"] for c in browser_cookies if domain in c.get("domain", "")}
+                    if cookie_dict:
+                        MediaDetector._cookie_jar[domain] = cookie_dict
+                        print(f"[Detector] Saved {len(cookie_dict)} browser cookies for {domain}")
+                except Exception:
+                    pass
+
+                browser.close()
+
+            # Extract video URLs from rendered HTML
+            clean_html = html.replace('\\/', '/')
+
+            # Scan for video URLs in rendered page
+            for pat in [
+                r'(?:video_url|videoUrl|stream_url|hls_url)\s*[:=]\s*["\']([^"\'<>\s]{10,})["\']',
+                r'(?:file|src|source)\s*:\s*["\']([^"\'<>]{10,}\.(?:mp4|m3u8|mpd|webm)[^"\'<>]*)["\']',
+                r'<source[^>]+src=["\']([^"\']+)["\']',
+                r'<video[^>]+src=["\']([^"\']+)["\']',
+                r'https?://[^\s"\'<>\\]+\.(?:mp4|m3u8|mpd|webm)(?:[?#][^\s"\'<>]*)?',
+                r'"(?:url|src|file|stream|source)"\s*:\s*"([^"<>{}]{10,})"',
+                r'data-(?:src|video|stream|url)\s*=\s*["\']([^"\'<>]{10,})["\']',
+            ]:
+                for m in re.findall(pat, clean_html, re.IGNORECASE):
+                    cand = urllib.parse.urljoin(url, m) if not m.startswith("http") else m
+                    if is_valid_media_url(cand):
+                        media_urls.add(cand)
+
+            if not media_urls:
+                print(f"[Detector] Browser sniff found no video URLs on {url}")
+                return {"success": False, "formats": []}
+
+            # Build formats from discovered URLs
+            print(f"[Detector] Browser sniff found {len(media_urls)} video URLs")
+
+            # Determine page title
+            title = ""
+            if "just a moment" not in page_title.lower() and page_title:
+                title = re.sub(r'\s*[-|].*$', '', page_title).strip()
+            if not title:
+                t_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
+                title = t_m.group(1).strip() if t_m else "Detected Video"
+                if "just a moment" in title.lower():
+                    title = "Detected Video"
+
+            # Thumbnail
+            thumbnail = ""
+            og_img = re.search(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+            if og_img:
+                thumbnail = og_img.group(1)
+
+            def _height_from_url(u):
+                m = re.search(r'(\d{3,4})p', u)
+                if m: return int(m.group(1))
+                m2 = re.search(r'[_/-](2160|1440|1080|720|480|360|240)', u)
+                if m2: return int(m2.group(1))
+                return 0
+
+            formats = []
+            for i, m_url in enumerate(sorted(media_urls, key=lambda u: _height_from_url(u), reverse=True)):
+                clean = m_url.split('?')[0].split('#')[0].lower()
+                ext = "mp4"
+                for e in [".m3u8", ".mpd", ".webm", ".mkv"]:
+                    if e in clean:
+                        ext = e.lstrip(".")
+                        break
+                h = _height_from_url(m_url)
+                if "preview" in clean or "thumb" in clean or "trailer" in clean:
+                    continue  # Skip preview/trailer URLs
+
+                q_label = f"{h}p ({ext.upper()})" if h else f"Stream {i+1} ({ext.upper()})"
+                formats.append({
+                    "format_id": f"browser_{i}",
+                    "quality_label": q_label,
+                    "resolution": f"{h}p" if h else "Native Stream",
+                    "height": h or 720,
+                    "ext": "mp4" if ext in ["m3u8", "mpd"] else ext,
+                    "codec": "h264/aac",
+                    "filesize": 0,
+                    "filesize_str": f"{h}p Stream" if h else "Stream",
+                    "has_audio": True,
+                    "has_video": True,
+                    "direct_url": m_url,
+                    "download_selector": "best[format_id!^=sb]",
+                    "referer": url
+                })
+
+            if not formats:
+                return {"success": False, "formats": []}
+
+            return {
+                "success": True,
+                "title": title,
+                "thumbnail": thumbnail,
+                "duration": 0,
+                "duration_str": "Stream",
+                "source_url": url,
+                "direct_url": formats[0]["direct_url"],
+                "is_protected": False,
+                "formats": formats,
+                "detected_count": len(formats)
+            }
+
+        except Exception as e:
+            print(f"[Detector] Browser sniff failed: {e}")
+            return {"success": False, "formats": []}

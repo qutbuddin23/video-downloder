@@ -562,9 +562,29 @@ class DownloadTask:
                     self._download_direct_http()
                     return
                 except Exception as direct_err:
-                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), falling back to streaming engine...")
+                    print(f"[Downloader] Direct HTTP download notice ({direct_err}), checking if URL expired...")
                     if self.is_cancelled or self.is_paused:
                         return
+
+                    # If error is 410 Gone or 403, the CDN token expired — re-analyze to get fresh URL
+                    err_str = str(direct_err)
+                    if ("410" in err_str or "403" in err_str or "Gone" in err_str) and self.url:
+                        print(f"[Downloader] CDN token expired (410/403). Re-analyzing source: {self.url}")
+                        try:
+                            from core.detector import MediaDetector
+                            fresh_det = MediaDetector()
+                            fresh_result = fresh_det.analyze_url(self.url)
+                            if fresh_result.get("success") and fresh_result.get("formats"):
+                                new_url = fresh_result["formats"][0].get("direct_url", "")
+                                if new_url and new_url != self.direct_url:
+                                    print(f"[Downloader] Got fresh CDN URL, retrying download...")
+                                    self.direct_url = new_url
+                                    self.db.update_download_direct_url(self.task_id, new_url)
+                                    self._download_direct_http(custom_url=new_url)
+                                    return
+                        except Exception as reanalyze_err:
+                            print(f"[Downloader] Re-analyze failed: {reanalyze_err}")
+
                     # Fallback to yt-dlp: First try self.url (the webpage URL for full site extractor), then self.direct_url
                     try:
                         self._download_via_ytdlp(override_url=self.url)

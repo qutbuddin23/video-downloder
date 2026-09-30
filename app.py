@@ -428,7 +428,7 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 target_url = "https://" + target_url
 
             try:
-                headers = {
+                base_headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
@@ -437,8 +437,32 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                 from core.detector import MediaDetector
                 cookies = MediaDetector.get_cookies_for_url(target_url)
 
-                resp = requests.get(target_url, headers=headers, cookies=cookies or None, timeout=15, allow_redirects=True)
+                # Try curl_cffi (Chrome impersonation) first to bypass Cloudflare / bot-check walls
+                resp = None
+                try:
+                    import curl_cffi.requests as cffi_requests
+                    cffi_sess = cffi_requests.Session()
+                    if cookies:
+                        cffi_sess.cookies.update(cookies)
+                    resp = cffi_sess.get(target_url, headers=base_headers, timeout=20, allow_redirects=True, impersonate="chrome124")
+                    # If Cloudflare challenge page (no real content), discard and fall through
+                    if resp.status_code in (403, 503) and "cf-ray" in (resp.headers or {}):
+                        resp = None
+                except Exception:
+                    resp = None
+
+                # Fallback: plain requests
+                if resp is None:
+                    resp = requests.get(target_url, headers=base_headers, cookies=cookies or None, timeout=15, allow_redirects=True)
                 final_target = resp.url
+                if resp.cookies:
+                    try:
+                        domain = urllib.parse.urlsplit(final_target).netloc.lower()
+                        if domain not in MediaDetector._cookie_jar:
+                            MediaDetector._cookie_jar[domain] = {}
+                        MediaDetector._cookie_jar[domain].update(resp.cookies.get_dict())
+                    except Exception:
+                        pass
                 c_type = resp.headers.get("Content-Type", "text/html").lower()
 
                 if "text/html" in c_type or "application/xhtml" in c_type:

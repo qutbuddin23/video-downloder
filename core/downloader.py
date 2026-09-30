@@ -1109,8 +1109,12 @@ class DownloadTask:
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "android_vr", "web"]
+                },
+                "generic": {
+                    "impersonate": ["chrome"]
                 }
-            }
+            },
+            "impersonate": "chrome",  # curl_cffi: bypass Cloudflare / bot-check walls
         }
 
         import yt_dlp
@@ -1252,6 +1256,7 @@ class DownloadManager:
             "duration": duration,
             "quality": quality_label,
             "format": safe_format,
+            "direct_url": direct_url or "",
             "status": "queued",
             "progress": 0.0,
             "downloaded_bytes": 0,
@@ -1297,7 +1302,7 @@ class DownloadManager:
             url=record["url"],
             title=record["title"],
             format_selector=format_sel,
-            direct_url=None,
+            direct_url=record.get("direct_url") or None,
             output_dir=self.download_folder,
             db=self.db
         )

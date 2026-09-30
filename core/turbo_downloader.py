@@ -79,6 +79,27 @@ class TurboSegmentedDownloader:
             status = r.status_code
             resp_headers = r.headers
 
+            # If range request was rejected (e.g. 403 Forbidden or 416), probe without Range header
+            if status not in (200, 206):
+                clean_hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ("range", "origin")}
+                try:
+                    r2 = requests.get(
+                        self.url,
+                        headers=clean_hdrs,
+                        cookies=self.cookies or None,
+                        stream=True,
+                        timeout=15,
+                        verify=False,
+                        allow_redirects=True
+                    )
+                    if r2.status_code in (200, 206):
+                        r = r2
+                        final_url = r.url
+                        status = r.status_code
+                        resp_headers = r.headers
+                except Exception:
+                    pass
+
             # Check for range support (206 Partial Content or Content-Range header)
             supports_ranges = False
             total_size = 0
@@ -312,7 +333,7 @@ class TurboSegmentedDownloader:
         with self._lock:
             self._thread_bytes[0] = downloaded
 
-        with requests.get(
+        resp = requests.get(
             self.url,
             headers=headers,
             cookies=self.cookies or None,
@@ -320,7 +341,25 @@ class TurboSegmentedDownloader:
             timeout=25,
             verify=False,
             allow_redirects=True
-        ) as resp:
+        )
+        if resp.status_code not in (200, 206) and resp.status_code == 403:
+            # Server might reject Origin or Range on 403; try clean headers
+            clean_h = {k: v for k, v in headers.items() if k.lower() not in ("origin", "range")}
+            resp_clean = requests.get(
+                self.url,
+                headers=clean_h,
+                cookies=self.cookies or None,
+                stream=True,
+                timeout=25,
+                verify=False,
+                allow_redirects=True
+            )
+            if resp_clean.status_code in (200, 206):
+                resp = resp_clean
+                downloaded = 0
+                mode = "wb"
+
+        with resp:
             if resp.status_code not in (200, 206):
                 raise ValueError(f"HTTP Server returned status {resp.status_code}")
 

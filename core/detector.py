@@ -175,8 +175,12 @@ class MediaDetector:
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "android_vr", "web"]
+                },
+                "generic": {
+                    "impersonate": ["chrome"]
                 }
-            }
+            },
+            "impersonate": "chrome",  # curl_cffi: bypass Cloudflare bot-check
         }
 
     def analyze_url(self, url: str) -> Dict[str, Any]:

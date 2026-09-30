@@ -58,9 +58,16 @@ class Database:
                 error_message TEXT,
                 is_vault INTEGER DEFAULT 0,
                 tags TEXT DEFAULT '[]',
-                is_favorite INTEGER DEFAULT 0
+                is_favorite INTEGER DEFAULT 0,
+                direct_url TEXT DEFAULT ''
             );
             """)
+
+            # Migration for existing databases
+            try:
+                cursor.execute("ALTER TABLE downloads ADD COLUMN direct_url TEXT DEFAULT '';")
+            except Exception:
+                pass
 
             # Private Vault items table
             cursor.execute("""
@@ -128,8 +135,8 @@ class Database:
             INSERT OR REPLACE INTO downloads (
                 id, url, title, thumbnail, duration, file_path, file_size,
                 quality, format, status, progress, speed, downloaded_bytes,
-                total_bytes, created_at, completed_at, error_message, is_vault, tags, is_favorite
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                total_bytes, created_at, completed_at, error_message, is_vault, tags, is_favorite, direct_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """, (
                 item["id"],
                 item.get("url", ""),
@@ -150,10 +157,17 @@ class Database:
                 item.get("error_message", None),
                 1 if item.get("is_vault") else 0,
                 json.dumps(item.get("tags", [])),
-                1 if item.get("is_favorite") else 0
+                1 if item.get("is_favorite") else 0,
+                item.get("direct_url", "")
             ))
             conn.commit()
             return item["id"]
+
+    def update_download_direct_url(self, download_id: str, direct_url: str):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE downloads SET direct_url = ? WHERE id = ?;", (direct_url, download_id))
+            conn.commit()
 
     def update_download_progress(self, download_id: str, status: str, progress: float,
                                  downloaded_bytes: int, total_bytes: int, speed: float,

@@ -1,28 +1,44 @@
 """
-Smart Resilient DNS Resolver for Universal Video Downloader.
-Bypasses ISP DNS blocking, NXDOMAIN errors, and registrar client-holds
-by querying authoritative nameservers and public DNS providers directly over standard UDP port 53.
-Zero external dependencies (pure Python standard library socket + struct).
+Smart Resilient DNS Resolver & Anti-DPI SNI Shield for Universal Video Downloader.
+Bypasses ISP DNS blocking, NXDOMAIN errors, registrar client-holds, and ISP Deep Packet Inspection (DPI)
+by querying authoritative nameservers, utilizing DoH fallbacks, and suppressing SNI on blocked media CDNs.
+Zero external C-dependencies (pure Python standard library socket, struct, ssl + urllib3 hook).
 """
 
 import socket
 import struct
+import ssl
 import threading
+import urllib.parse
 from typing import Optional, List, Dict
 
 _LOCK = threading.Lock()
 _ORIG_GETADDRINFO = socket.getaddrinfo
+_ORIG_SSL_WRAP_SOCKET = ssl.SSLContext.wrap_socket
 _SMART_DNS_INSTALLED = False
 
 # In-memory resolved IP cache
 _DNS_CACHE: Dict[str, str] = {
-    # Hardcoded fallback mappings for known CDN platforms
+    # Known CDN platforms
     "d237157.fpvcdn.com": "50.7.252.210",
 }
 
+# Domains where ISP DPI blocks connection when SNI is present in TLS ClientHello
+SNI_SENSITIVE_DOMAINS = (
+    "fpvcdn.com",
+    "freepornvideos.xxx",
+    "yamyhub.com",
+    "you-porn.com",
+    "youporn.com",
+    "xhamster.com",
+    "pornhub.com",
+    "redtube.com",
+    "spankbang.com",
+)
+
 # Reliable authoritative and public DNS servers
 FALLBACK_DNS_SERVERS = (
-    # Cloudflare Authoritative Nameservers (fpvcdn.com)
+    # Cloudflare Authoritative Nameservers for fpvcdn.com
     "173.245.58.55",
     "172.64.32.55",
     # Cloudflare Public Anycast DNS
@@ -36,6 +52,14 @@ FALLBACK_DNS_SERVERS = (
     # OpenDNS
     "208.67.222.222",
 )
+
+
+def should_bypass_sni(hostname: Optional[str]) -> bool:
+    """Returns True if the hostname is known to be blocked by ISP SNI-based DPI."""
+    if not hostname or not isinstance(hostname, str):
+        return False
+    h_low = hostname.lower()
+    return any(domain in h_low for domain in SNI_SENSITIVE_DOMAINS)
 
 
 def build_dns_query(domain: str) -> bytes:
@@ -156,11 +180,67 @@ def smart_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
         raise orig_err
 
 
+def smart_ssl_wrap_socket(self, sock, *args, **kwargs):
+    """
+    Hooked SSLContext.wrap_socket that suppresses plaintext SNI for blocked domains
+    or when connections are terminated by ISP DPI boxes.
+    """
+    server_hostname = kwargs.get("server_hostname")
+    is_sensitive = should_bypass_sni(server_hostname)
+
+    if is_sensitive:
+        kwargs["server_hostname"] = None
+        self.check_hostname = False
+        self.verify_mode = ssl.CERT_NONE
+
+    try:
+        return _ORIG_SSL_WRAP_SOCKET(self, sock, *args, **kwargs)
+    except (ssl.SSLError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
+        # If connection failed with SNI, retry once without SNI and without strict verification
+        if kwargs.get("server_hostname"):
+            print(f"[SmartDNS] ISP DPI reset detected ({e}), retrying without SNI...")
+            kwargs["server_hostname"] = None
+            self.check_hostname = False
+            self.verify_mode = ssl.CERT_NONE
+            try:
+                return _ORIG_SSL_WRAP_SOCKET(self, sock, *args, **kwargs)
+            except Exception:
+                pass
+        raise
+
+
 def install_smart_dns():
-    """Activates the Smart Resilient DNS Resolver globally across the Python process."""
+    """Activates the Smart Resilient DNS Resolver & Anti-DPI SNI Shield globally across the Python process."""
     global _SMART_DNS_INSTALLED
     with _LOCK:
         if not _SMART_DNS_INSTALLED:
             socket.getaddrinfo = smart_getaddrinfo
+            ssl.SSLContext.wrap_socket = smart_ssl_wrap_socket
+
+            # Also hook urllib3 if already loaded or loaded in future
+            try:
+                import urllib3.util.ssl_
+                _orig_u3_wrap = urllib3.util.ssl_.ssl_wrap_socket
+
+                def smart_u3_wrap(sock, *args, **kwargs):
+                    h = kwargs.get("server_hostname")
+                    if should_bypass_sni(h):
+                        kwargs["server_hostname"] = None
+                        if "cert_reqs" in kwargs:
+                            kwargs["cert_reqs"] = ssl.CERT_NONE
+                    try:
+                        return _orig_u3_wrap(sock, *args, **kwargs)
+                    except (ssl.SSLError, ConnectionResetError, OSError):
+                        if kwargs.get("server_hostname"):
+                            kwargs["server_hostname"] = None
+                            if "cert_reqs" in kwargs:
+                                kwargs["cert_reqs"] = ssl.CERT_NONE
+                            return _orig_u3_wrap(sock, *args, **kwargs)
+                        raise
+
+                urllib3.util.ssl_.ssl_wrap_socket = smart_u3_wrap
+            except Exception:
+                pass
+
             _SMART_DNS_INSTALLED = True
-            print("[SmartDNS] Global resilient DNS resolver installed.")
+            print("[SmartDNS] Global resilient DNS resolver & Anti-DPI SNI Shield installed.")

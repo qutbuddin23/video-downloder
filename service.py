@@ -9,6 +9,8 @@ continue uninterrupted at maximum speed when the screen is off, phone is locked,
 import time
 import os
 import threading
+from core.dns_resolver import install_smart_dns
+install_smart_dns()
 
 try:
     from jnius import autoclass, cast

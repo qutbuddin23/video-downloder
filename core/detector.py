@@ -216,7 +216,7 @@ class MediaDetector:
                 if clean.endswith(candidate):
                     ext = candidate.lstrip('.')
                     break
-            path_part = urllib.parse.urlsplit(url).path
+            path_part = urllib.parse.urlsplit(url).path.rstrip('/')
             fname = os.path.basename(path_part)
             raw_title = os.path.splitext(fname)[0] or "Direct Download"
             title = re.sub(r'[_.-]+', ' ', raw_title).strip() or "Direct Download"
@@ -382,6 +382,7 @@ class MediaDetector:
 
             if is_video:
                 resolution_label = f"{height}p" if height else (f.get("resolution") or "Standard")
+                safe_fid = f"{fmt_id}/" if (fmt_id and not fmt_id.startswith("sb") and "(" not in fmt_id and " " not in fmt_id) else ""
                 # Group by resolution to present the best stream per quality
                 if resolution_label not in quality_map or filesize > quality_map[resolution_label]["filesize"]:
                     quality_map[resolution_label] = {
@@ -396,7 +397,7 @@ class MediaDetector:
                         "has_audio": is_audio,
                         "has_video": True,
                         "direct_url": url,
-                        "download_selector": f"best[height<={height}][vcodec!=none][acodec!=none][format_id!^=sb]/b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]" if height else "b/18/best[vcodec!=none][acodec!=none][format_id!^=sb]/best[format_id!^=sb]"
+                        "download_selector": f"{safe_fid}best[height<={height}][format_id!^=sb]/best[height<={height}]/b/18/best[format_id!^=sb]" if height else f"{safe_fid}b/18/best[format_id!^=sb]"
                     }
             elif is_audio and not is_video:
                 # Audio only stream

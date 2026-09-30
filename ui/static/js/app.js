@@ -1360,7 +1360,7 @@ async function onFabClicked() {
     showToast('📋 Copy a video or download link in any app, then tap ⚡ to download!');
 }
 
-async function quickAutoDownloadUrl(url) {
+async function quickAutoDownloadUrl(url, title = '', pageUrl = '') {
     if (!url) return;
     showToast('⚡ Auto-Detecting video & starting download...', 3500);
 
@@ -1378,7 +1378,7 @@ async function quickAutoDownloadUrl(url) {
         const res = await fetch('/api/auto-download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: url })
+            body: JSON.stringify({ url: url, title: title || '', page_url: pageUrl || '' })
         });
         const data = await res.json();
         if (data.success) {
@@ -1389,8 +1389,8 @@ async function quickAutoDownloadUrl(url) {
             showToast('Sniffing page media streams...');
             switchTab('home');
             const urlInput = document.getElementById('url-input');
-            if (urlInput) urlInput.value = url;
-            triggerAnalyze(url);
+            if (urlInput) urlInput.value = pageUrl || url;
+            triggerAnalyze(pageUrl || url);
         }
     } catch (err) {
         showToast('Auto-download request failed.');
@@ -1629,7 +1629,7 @@ function initBrowser() {
             if (currentSniffedStream) {
                 const streamToDownload = currentSniffedStream;
                 if (sniffBanner) sniffBanner.style.display = 'none';
-                quickAutoDownloadUrl(streamToDownload.url);
+                quickAutoDownloadUrl(streamToDownload.url, streamToDownload.title, streamToDownload.pageUrl);
             }
         });
     }

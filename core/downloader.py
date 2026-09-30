@@ -913,7 +913,7 @@ class DownloadTask:
                     headers["Range"] = f"bytes={downloaded}-"
 
                 try:
-                    r = session.get(target_url, headers=headers, stream=True, timeout=15)
+                    r = session.get(target_url, headers=headers, stream=True, timeout=15, verify=False, allow_redirects=True)
                     last_status_code = r.status_code
                     last_reason = r.reason or ""
                     if r.status_code in (200, 206):
@@ -921,10 +921,33 @@ class DownloadTask:
                         if not ("image/" in c_type or "svg" in c_type or "text/html" in c_type):
                             resp = r
                             break
-                except Exception:
+                except Exception as req_ex:
+                    last_reason = str(req_ex)
                     continue
             if resp:
                 break
+
+        # Ultra-resilient fallback: If direct connection is blocked by ISP DPI or firewall, try via resilient proxy
+        if not resp and not (self.is_cancelled or self.is_paused):
+            print(f"[Downloader] Direct connection to {target_url} blocked ({last_reason}), attempting web proxy stream...")
+            proxy_endpoints = [
+                f"https://corsproxy.io/?url={urllib.parse.quote(target_url, safe='')}",
+                f"https://api.allorigins.win/raw?url={urllib.parse.quote(target_url, safe='')}",
+            ]
+            for p_url in proxy_endpoints:
+                try:
+                    p_headers = {"User-Agent": "Mozilla/5.0"}
+                    if downloaded > 0:
+                        p_headers["Range"] = f"bytes={downloaded}-"
+                    r = session.get(p_url, headers=p_headers, stream=True, timeout=20, verify=False)
+                    if r.status_code in (200, 206):
+                        c_type = r.headers.get("content-type", "").lower()
+                        if not ("image/" in c_type or "svg" in c_type or "text/html" in c_type):
+                            resp = r
+                            print(f"[Downloader] Successfully connected via resilient web proxy: {p_url[:40]}...")
+                            break
+                except Exception as p_err:
+                    last_reason = str(p_err)
 
         if not resp:
             if os.path.exists(part_path):
@@ -932,7 +955,7 @@ class DownloadTask:
                     os.remove(part_path)
                 except Exception:
                     pass
-            status_msg = f"HTTP Server returned status {last_status_code}: {last_reason}" if last_status_code else "Direct stream request failed"
+            status_msg = f"HTTP Server returned status {last_status_code}: {last_reason}" if last_status_code else f"Direct stream request failed: {last_reason}"
             raise ValueError(status_msg)
 
         # Strictly validate content type

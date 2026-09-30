@@ -72,6 +72,7 @@ class TurboSegmentedDownloader:
                 cookies=self.cookies or None,
                 stream=True,
                 timeout=15,
+                verify=False,
                 allow_redirects=True
             )
             final_url = r.url
@@ -107,13 +108,16 @@ class TurboSegmentedDownloader:
                     headers={**self.headers, "Range": "bytes=0-0"},
                     cookies=self.cookies or None,
                     stream=True,
-                    timeout=8
+                    timeout=8,
+                    verify=False
                 )
                 if test_r.status_code == 206:
                     supports_ranges = True
 
             self.supports_ranges = supports_ranges
             self.total_size = total_size
+            if final_url and final_url != self.url:
+                self.url = final_url
             return supports_ranges, total_size, dict(resp_headers)
         except Exception as e:
             print(f"[TurboDownloader] Probe warning: {e}")
@@ -129,7 +133,13 @@ class TurboSegmentedDownloader:
 
         # Decide whether to use multi-segmented download or single-stream
         if supports_ranges and total_size >= self.MIN_SEGMENT_SIZE * 2:
-            return self._download_segmented(total_size)
+            try:
+                return self._download_segmented(total_size)
+            except Exception as seg_err:
+                print(f"[TurboDownloader] Segmented download noticed ({seg_err}), falling back to single stream...")
+                if self.is_cancelled_fn() or self.is_paused_fn():
+                    return False
+                return self._download_single_stream(total_size)
         else:
             return self._download_single_stream(total_size)
 
@@ -267,7 +277,9 @@ class TurboSegmentedDownloader:
                 headers=headers,
                 cookies=self.cookies or None,
                 stream=True,
-                timeout=25
+                timeout=25,
+                verify=False,
+                allow_redirects=True
             ) as resp:
                 if resp.status_code not in (200, 206):
                     raise ValueError(f"Worker {worker_id} HTTP error: {resp.status_code}")
@@ -305,7 +317,9 @@ class TurboSegmentedDownloader:
             headers=headers,
             cookies=self.cookies or None,
             stream=True,
-            timeout=25
+            timeout=25,
+            verify=False,
+            allow_redirects=True
         ) as resp:
             if resp.status_code not in (200, 206):
                 raise ValueError(f"HTTP Server returned status {resp.status_code}")

@@ -34,7 +34,7 @@ from core.paths import (
     request_all_files_access
 )
 from core.database import Database
-from core.detector import MediaDetector
+from core.detector import MediaDetector, is_direct_download_url
 from core.downloader import DownloadManager
 from core.vault import VaultManager
 from core.storage_manager import StorageManager, format_bytes
@@ -58,7 +58,7 @@ latest_auto_download_id: Optional[str] = None
 http_server_instance: Optional[ThreadingHTTPServer] = None
 
 
-def trigger_auto_download(url: str):
+def trigger_auto_download(url: str, custom_title: str = "", page_url: str = ""):
     global latest_auto_download_title, latest_auto_download_id
     try:
         url = url.strip()
@@ -68,9 +68,17 @@ def trigger_auto_download(url: str):
             print(f"[Auto-Download] Ignored image link: {url}")
             return False, "", ""
 
-        result = detector.analyze_url(url)
+        # If page_url is provided and valid, analyze the page_url so full metadata/formats are detected
+        analysis_url = page_url if page_url and not is_direct_download_url(page_url) else url
+        result = detector.analyze_url(analysis_url)
+        if not result.get("success") and analysis_url != url:
+            result = detector.analyze_url(url)
+
         if result.get("success"):
-            title = result.get("title", "Universal Download")
+            title = custom_title or result.get("title", "Universal Download")
+            if (not title or title == "Direct Download" or title == "Detected Video") and custom_title:
+                title = custom_title
+
             formats = result.get("formats", [])
             selected_fmt = next((f for f in formats if f.get("has_audio") and f.get("has_video")), None)
             if not selected_fmt and formats:
@@ -78,10 +86,14 @@ def trigger_auto_download(url: str):
 
             format_sel = selected_fmt.get("download_selector") if selected_fmt else "direct"
             quality_lbl = selected_fmt.get("quality_label", "Auto/Best") if selected_fmt else "Auto/Best"
-            direct_u = selected_fmt.get("direct_url") if selected_fmt else result.get("direct_url")
+            direct_u = selected_fmt.get("direct_url") if selected_fmt else (result.get("direct_url") or url)
+
+            # If original input was a specific stream URL, preserve it
+            if is_direct_download_url(url) and not is_direct_download_url(direct_u):
+                direct_u = url
 
             dl_id = downloader.create_download(
-                url=url,
+                url=page_url or url,
                 title=title,
                 quality_label=quality_lbl,
                 format_selector=format_sel,
@@ -737,10 +749,12 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
 
         if path == "/api/auto-download":
             url = body.get("url", "").strip()
+            custom_title = body.get("title", "").strip()
+            page_url = body.get("page_url", "").strip()
             if not url:
                 self.send_error_json("Empty URL provided", 400)
                 return
-            success, title, dl_id = trigger_auto_download(url)
+            success, title, dl_id = trigger_auto_download(url, custom_title=custom_title, page_url=page_url)
             self.send_json({"success": success, "title": title, "download_id": dl_id})
             return
 

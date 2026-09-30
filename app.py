@@ -720,7 +720,39 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
             if not url:
                 self.send_error_json("Empty URL provided", 400)
                 return
-            result = detector.analyze_url(url)
+
+            # Normalize mat6tube-style VK video IDs to proper vk.com URLs
+            # mat6tube embeds VK videos as /watch/-OWNERID_VIDEOID
+            import re as _re
+            _vk_m = _re.search(r'/watch/(-?\d+_\d+)', url)
+            if _vk_m and "mat6tube" in url.lower():
+                vk_video_id = _vk_m.group(1)
+                url = f"https://vk.com/video{vk_video_id}"
+                print(f"[Analyze] mat6tube → VK video redirect: {url}")
+
+            # Run analyze in thread with 45-second hard timeout so UI never freezes
+            import threading as _threading
+            _result_box = [None]
+            def _run_analyze():
+                try:
+                    _result_box[0] = detector.analyze_url(url)
+                except Exception as _e:
+                    _result_box[0] = {"success": False, "error_message": str(_e), "formats": []}
+            _t = _threading.Thread(target=_run_analyze, daemon=True)
+            _t.start()
+            _t.join(timeout=45)
+            if _result_box[0] is None:
+                # Timeout — return a useful error instead of hanging forever
+                result = {
+                    "success": False,
+                    "title": "Detection Timed Out",
+                    "source_url": url,
+                    "error_message": "Site took too long to respond (blocked or unreachable). Try opening in Browser tab.",
+                    "formats": []
+                }
+            else:
+                result = _result_box[0]
+
             if result.get("success"):
                 db.record_history(url, result.get("title", ""), result.get("thumbnail", ""))
             self.send_json(result)

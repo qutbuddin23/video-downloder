@@ -225,11 +225,17 @@ async function triggerAnalyze(url) {
     statusText.textContent = 'Analyzing URL & Sniffing Media Streams...';
 
     try {
+        // 50-second client-side abort so browser never hangs forever
+        const ctrl = new AbortController();
+        const abortTimer = setTimeout(() => ctrl.abort(), 50000);
+
         const res = await fetch('/api/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ url }),
+            signal: ctrl.signal
         });
+        clearTimeout(abortTimer);
         const data = await res.json();
         statusText.style.display = 'none';
 
@@ -240,15 +246,37 @@ async function triggerAnalyze(url) {
         }
 
         if (!data.success) {
-            showToast(data.error_message || 'No downloadable streams detected on this page.', 4500);
+            // Show inline error with "Open in Browser" button for blocked/unreachable sites
+            const errMsg = data.error_message || 'No downloadable streams detected on this page.';
+            const isBlocked = errMsg.toLowerCase().includes('timed out') || errMsg.toLowerCase().includes('blocked') || errMsg.toLowerCase().includes('unreachable');
+            statusText.style.display = 'block';
+            statusText.innerHTML = `
+                <div style="color:#F87171;font-size:13px;margin-bottom:10px;">⚠️ ${escapeHtml(errMsg)}</div>
+                ${isBlocked ? `<button onclick="openInBrowser('${escapeHtml(url)}')" style="background:#6366F1;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;width:100%;">🌐 Open in Browser</button>` : ''}
+            `;
             return;
         }
 
         currentAnalysis = data;
         renderVideoPreview(data);
     } catch (err) {
-        statusText.style.display = 'none';
-        showToast('Network or server error while analyzing URL.', 4500);
+        statusText.style.display = 'block';
+        statusText.innerHTML = `
+            <div style="color:#F87171;font-size:13px;margin-bottom:10px;">⚠️ Could not detect video — site may be blocked or protected.</div>
+            <button onclick="openInBrowser('${escapeHtml(url)}')" style="background:#6366F1;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;width:100%;">🌐 Open in Browser</button>
+        `;
+    }
+}
+
+function openInBrowser(url) {
+    // Navigate the in-app browser to the URL
+    switchTab('browser');
+    const browserInput = document.getElementById('browser-url-input');
+    if (browserInput) {
+        browserInput.value = url;
+    }
+    if (typeof loadBrowserUrl === 'function') {
+        loadBrowserUrl(url);
     }
 }
 

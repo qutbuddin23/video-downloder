@@ -166,7 +166,7 @@ class MediaDetector:
             "geo_bypass": True,
             "logtostderr": False,
             "logger": SafeYtdlLogger(),
-            "socket_timeout": 15,
+            "socket_timeout": 8,
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -562,18 +562,37 @@ class MediaDetector:
         """
         html = ""
         cookies = MediaDetector.get_cookies_for_url(url)
+
+        # Try curl_cffi (Chrome TLS fingerprint) first — bypasses Cloudflare / bot-check walls
         try:
-            resp = requests.get(url, headers=self.DEFAULT_HEADERS, cookies=cookies or None, timeout=12)
-            if resp.status_code == 200:
-                html = resp.text
-                domain = urllib.parse.urlsplit(url).netloc
-                if getattr(resp, "cookies", None):
-                    try:
-                        MediaDetector._cookie_jar[domain] = resp.cookies.get_dict()
-                    except Exception:
-                        pass
+            import curl_cffi.requests as cffi_requests
+            cffi_sess = cffi_requests.Session()
+            if cookies:
+                cffi_sess.cookies.update(cookies)
+            cffi_resp = cffi_sess.get(url, headers=self.DEFAULT_HEADERS, timeout=15, allow_redirects=True, impersonate="chrome124")
+            if cffi_resp.status_code == 200:
+                html = cffi_resp.text
+                domain = urllib.parse.urlsplit(cffi_resp.url).netloc
+                try:
+                    MediaDetector._cookie_jar[domain] = dict(cffi_resp.cookies)
+                except Exception:
+                    pass
         except Exception:
             pass
+
+        if not html:
+            try:
+                resp = requests.get(url, headers=self.DEFAULT_HEADERS, cookies=cookies or None, timeout=12)
+                if resp.status_code == 200:
+                    html = resp.text
+                    domain = urllib.parse.urlsplit(url).netloc
+                    if getattr(resp, "cookies", None):
+                        try:
+                            MediaDetector._cookie_jar[domain] = resp.cookies.get_dict()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         if not html:
             # Fallback to curl.exe for blocked connections, SNI resets, or network firewalls

@@ -86,8 +86,17 @@ def test_svg_and_images_strictly_rejected():
     mock_resp = MagicMock()
     mock_resp.text = sample_html
     mock_resp.status_code = 200
+    mock_resp.url = "https://example.com"
+    mock_resp.cookies = {}
 
-    with patch("requests.get", return_value=mock_resp):
+    # Mock curl_cffi session to raise so requests.get fallback is used
+    mock_cffi_sess = MagicMock()
+    mock_cffi_sess.get.side_effect = Exception("mocked curl_cffi unavailable")
+    mock_cffi_module = MagicMock()
+    mock_cffi_module.Session.return_value = mock_cffi_sess
+
+    with patch("requests.get", return_value=mock_resp), \
+         patch.dict("sys.modules", {"curl_cffi": MagicMock(), "curl_cffi.requests": mock_cffi_module}):
         res = detector._sniff_webpage("https://example.com")
         assert res["success"] is True
         assert res["detected_count"] == 1

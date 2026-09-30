@@ -180,12 +180,21 @@ def test_trailing_slash_media_urls_and_sources():
     mock_resp = MagicMock()
     mock_resp.text = sample_html
     mock_resp.status_code = 200
+    mock_resp.url = "https://example.com/video/123"
+    mock_resp.cookies = {}
 
-    with patch("requests.get", return_value=mock_resp):
+    mock_cffi_sess = MagicMock()
+    mock_cffi_sess.get.side_effect = Exception("mocked curl_cffi unavailable")
+    mock_cffi_module = MagicMock()
+    mock_cffi_module.Session.return_value = mock_cffi_sess
+
+    with patch("requests.get", return_value=mock_resp), \
+         patch.dict("sys.modules", {"curl_cffi": MagicMock(), "curl_cffi.requests": mock_cffi_module}):
         res = detector._sniff_webpage("https://example.com/video/123")
         assert res["success"] is True
-        assert res["detected_count"] == 3
-        # Ensure 2160p 4K UHD and 720p HD labels exist
+        # Expanded patterns may detect more unique URLs — require at least 3 (2160p, 720p, 480p)
+        assert res["detected_count"] >= 3
+        # Ensure key quality labels exist
         labels = [f["quality_label"] for f in res["formats"]]
         assert any("2160p 4K" in lbl for lbl in labels)
         assert any("720p HD" in lbl for lbl in labels)

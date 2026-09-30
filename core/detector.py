@@ -786,21 +786,63 @@ class MediaDetector:
             for m_url in extract_media_from_unpacked_js(unpacked):
                 _add_candidate(m_url)
 
-        # 6. JS configurations, KVS player vars, and streaming patterns
+        # 6. ULTRA-EXPANDED JS pattern extraction
+        all_script_content = " ".join(re.findall(
+            r'<script[^>]*>(.*?)</script>', clean_html, re.DOTALL | re.IGNORECASE))
+        scan_target = clean_html + " " + all_script_content
+
         js_patterns = [
-            r'["\']?(?:video_url|video_alt_url\d*|videoUrl\d*|stream_url\d*|file\d*|hls|m3u8|mp4)["\']?\s*[:=]\s*["\']([^"\'\s]+)["\']',
-            r'["\']?(?:1080p|720p|480p|360p|240p|high|med|low)["\']?\s*[:=]\s*["\']([^"\'\s]+)["\']',
-            r'https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?',
-            r'https?://[^\s"\'<>]+\.mpd(?:\?[^\s"\'<>]*)?',
-            r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|mov)(?:/[^\s"\'<>]*)?'
+            r'["\' ]?(?:video_url|video_alt_url\d*|videoUrl\d*|stream_url\d*|hls_url|hls)["\' ]?\s*[:=]\s*["\' ]([^"\' <>\s]{10,})["\' ]',
+            r'(?:file|src|source)\s*:\s*["\' ]([^"\' <>]{10,}\.(?:mp4|m3u8|mpd|webm|mkv)[^"\' <>]*)["\' ]',
+            r'sources?\s*:\s*\[?\s*\{[^}]*(?:src|file)\s*:\s*["\' ]([^"\' <>]+)["\' ]',
+            r'manifestUri\s*[:=]\s*["\' ]([^"\' <>]+\.mpd[^"\' <>]*)["\' ]',
+            r'(?:hls\.loadSource|loadSource)\s*\(\s*["\' ]([^"\' <>]+\.m3u8[^"\' <>]*)["\' ]',
+            r'(?:var|let|const)\s+\w*[Vv]ideo\w*\s*=\s*["\' ]([^"\' <>]{10,})["\' ]',
+            r'(?:var|let|const)\s+\w*[Ss]tream\w*\s*=\s*["\' ]([^"\' <>]{10,})["\' ]',
+            r'window\.\w+\s*=\s*["\' ]([^"\' <>]{15,}\.(?:mp4|m3u8|mpd|webm)[^"\' <>]*)["\' ]',
+            r'["\' ](?:1080p?|720p?|480p?|360p?|240p?|2160p?|1440p?|high|medium|med|low|hd|sd)["\' ]?\s*[:=]\s*["\' ]([^"\' <>]{10,})["\' ]',
+            r'data-(?:src|stream|video|hls|url|file)\s*=\s*["\' ]([^"\' <>]{10,})["\' ]',
+            r'"(?:url|src|link|file|stream|source|videoUrl|streamUrl|hlsUrl)"\s*:\s*"([^"<>{}\[\]]{10,})"',
+            r'atob\s*\(\s*["\' ]([A-Za-z0-9+/=]{20,})["\' ]',
+            r'https?://[^\s"\' <>\\]+\.m3u8(?:[?#][^\s"\' <>]*)?',
+            r'https?://[^\s"\' <>\\]+\.mpd(?:[?#][^\s"\' <>]*)?',
+            r'https?://[^\s"\' <>\\]+\.mp4(?:[?#&][^\s"\' <>]*)?',
+            r'https?://[^\s"\' <>\\]+\.webm(?:[?#][^\s"\' <>]*)?',
         ]
+
+        def _try_decode_base64(s):
+            try:
+                import base64 as _b64
+                decoded = _b64.b64decode(s + "==").decode("utf-8", errors="ignore")
+                if decoded.startswith("http"):
+                    return decoded
+            except Exception:
+                pass
+            return ""
+
         for pat in js_patterns:
-            for match in re.findall(pat, clean_html, re.IGNORECASE):
-                if isinstance(match, tuple):
-                    match = match[0]
-                cand = urllib.parse.urljoin(url, match)
-                if is_valid_media_url(cand):
-                    _add_candidate(cand)
+            try:
+                for match in re.findall(pat, scan_target, re.IGNORECASE):
+                    parts = [match] if isinstance(match, str) else list(match)
+                    for m in parts:
+                        if not m or len(m) < 8:
+                            continue
+                        if not m.startswith("http") and re.fullmatch(r'[A-Za-z0-9+/=]+', m) and len(m) > 20:
+                            decoded = _try_decode_base64(m)
+                            if decoded:
+                                _add_candidate(urllib.parse.urljoin(url, decoded))
+                            continue
+                        cand = urllib.parse.urljoin(url, m)
+                        if is_valid_media_url(cand):
+                            _add_candidate(cand)
+            except Exception:
+                pass
+
+        # 6b. Brute-force: grab ALL https:// URLs from page and check validity
+        for u_m in re.finditer(r'https?://[^\s"\' <>\\]{12,}', scan_target):
+            cand = u_m.group(0).rstrip('",}]\\\' ')
+            if is_valid_media_url(cand):
+                _add_candidate(cand)
 
         if not stream_candidates:
             has_embed = bool(candidate_player_urls)

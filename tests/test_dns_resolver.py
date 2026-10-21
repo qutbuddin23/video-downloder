@@ -7,6 +7,7 @@ from core.dns_resolver import (
     resolve_host_with_fallback,
     smart_getaddrinfo,
     install_smart_dns,
+    query_doh,
     _DNS_CACHE
 )
 
@@ -38,3 +39,15 @@ def test_smart_getaddrinfo_fallback():
     # Destination IP must be the mapped IP
     assert info[0][4][0] == "50.7.252.210"
     assert info[0][4][1] == 443
+
+def test_query_doh_mocked():
+    from unittest.mock import MagicMock
+    with patch("urllib.request.urlopen") as mock_url:
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{"Status":0,"Answer":[{"name":"test.com","type":1,"data":"1.2.3.4"}]}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_url.return_value = mock_resp
+
+        ips = query_doh("test.com")
+        assert "1.2.3.4" in ips

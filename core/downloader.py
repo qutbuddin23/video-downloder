@@ -801,11 +801,6 @@ class DownloadTask:
         chosen_headers = dict(header_profiles[0])
         if best_ref:
             chosen_headers["Referer"] = best_ref
-            try:
-                p = urllib.parse.urlsplit(best_ref)
-                chosen_headers["Origin"] = f"{p.scheme}://{p.netloc}"
-            except Exception:
-                pass
 
         def _turbo_progress(downloaded_b, total_b, spd, spd_s):
             self.last_bytes = downloaded_b
@@ -924,11 +919,6 @@ class DownloadTask:
                 headers = dict(prof)
                 if ref:
                     headers["Referer"] = ref
-                    try:
-                        p = urllib.parse.urlsplit(ref)
-                        headers["Origin"] = f"{p.scheme}://{p.netloc}"
-                    except Exception:
-                        pass
                 if downloaded > 0:
                     headers["Range"] = f"bytes={downloaded}-"
 

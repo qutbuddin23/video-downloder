@@ -64,7 +64,7 @@ def is_valid_media_url(u: str) -> bool:
     """Strictly validates whether a URL points to a legitimate media stream/file."""
     if not u or not isinstance(u, str):
         return False
-    u_strip = u.strip()
+    u_strip = u.strip().replace(r'\u0026', '&').replace(r'\u002f', '/').replace(r'\u002F', '/')
     if not (u_strip.startswith("http://") or u_strip.startswith("https://")):
         return False
 
@@ -89,19 +89,26 @@ def is_valid_media_url(u: str) -> bool:
     if any(clean_u.endswith(ext) for ext in DIRECT_DOWNLOAD_EXTS):
         return True
 
-    # If no direct file extension, verify if it has clear media signatures in query or path
+    # If direct file extension appears in query params or unquoted path
+    unquoted = urllib.parse.unquote(low_u)
+    for ext in (".mp4", ".m3u8", ".mpd", ".webm", ".mkv", ".mov", ".m4v", ".ts", ".flv", ".mp3", ".m4a"):
+        if ext in unquoted:
+            return True
+
+    # Check media signatures in query or path
     media_signatures = (
         "mime=video", "mime=audio", "content_type=video", "content_type=audio",
         "/videoplayback", "videoplayback?", "playlist.m3u8", "master.m3u8",
         "/manifest/hls", "/manifest/dash", "/hls/", "/dash/", "video_stream",
-        "segment", "chunklist"
+        "segment", "chunklist", "/videofile/", "/get_video", "/get_file/",
+        "video_url", "stream_url"
     )
     if any(sig in low_u for sig in media_signatures):
         return True
 
     # Disallow player / embed / iframe / watch / video webpage URLs without media extensions
     page_patterns = ("/player/", "/embed/", "/iframe/", "/watch/", "/e/", "/v/")
-    if any(pat in low_u for pat in page_patterns):
+    if any(pat in clean_u for pat in page_patterns):
         return False
 
     return False
@@ -617,6 +624,22 @@ class MediaDetector:
                 pass
 
         if not html:
+            # Fallback to Resilient Web Gateway Proxy when ISP / country network blocks direct connection
+            try:
+                print(f"[Detector] Direct connection to {url} blocked or timed out, trying web gateway fallback...")
+                gateway_url = f"https://r.jina.ai/{url}"
+                g_resp = requests.get(
+                    gateway_url,
+                    headers={"X-Return-Format": "html", "User-Agent": "Mozilla/5.0"},
+                    timeout=15
+                )
+                if g_resp.status_code == 200 and len(g_resp.text) > 200:
+                    html = g_resp.text
+                    print(f"[Detector] Successfully fetched {len(html)} bytes via web gateway for {url}")
+            except Exception as ge:
+                print(f"[Detector] Web gateway notice: {ge}")
+
+        if not html:
             return {
                 "success": False,
                 "title": "Unreachable URL",
@@ -667,9 +690,11 @@ class MediaDetector:
             return 0
 
         def _add_candidate(cand_url: str, label: str = "", height: int = 0, selected: bool = False):
-            if not cand_url or not is_valid_media_url(cand_url):
+            if not cand_url:
                 return
-            cand_url = cand_url.strip()
+            cand_url = cand_url.strip().replace(r'\u0026', '&').replace(r'\u002f', '/').replace(r'\u002F', '/').replace('&amp;', '&')
+            if not is_valid_media_url(cand_url):
+                return
             if not height:
                 height = _extract_res_from_str(label) or _extract_res_from_str(cand_url)
             if cand_url in stream_candidates:
@@ -801,7 +826,7 @@ class MediaDetector:
         # 6. ULTRA-EXPANDED JS pattern extraction
         all_script_content = " ".join(re.findall(
             r'<script[^>]*>(.*?)</script>', clean_html, re.DOTALL | re.IGNORECASE))
-        scan_target = clean_html + " " + all_script_content
+        scan_target = clean_html + " " + all_script_content + " " + urllib.parse.unquote(clean_html)
 
         js_patterns = [
             r'["\' ]?(?:video_url|video_alt_url\d*|videoUrl\d*|stream_url\d*|hls_url|hls)["\' ]?\s*[:=]\s*["\' ]([^"\' <>\s]{10,})["\' ]',

@@ -346,7 +346,7 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
             headers_sent = False
             try:
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "*/*",
                     "Accept-Encoding": "identity",
                     "Connection": "keep-alive"
@@ -360,19 +360,44 @@ class UniversalHTTPHandler(BaseHTTPRequestHandler):
                         pass
                 if referer:
                     headers["Referer"] = referer
-                    try:
-                        parts = urllib.parse.urlsplit(referer)
-                        headers["Origin"] = f"{parts.scheme}://{parts.netloc}"
-                    except Exception:
-                        pass
+
+                from core.detector import MediaDetector
+                cookies = MediaDetector.get_cookies_for_url(stream_url)
+
+                # Check if this is an HLS .m3u8 playlist to rewrite internal URI lines
+                is_m3u8_hint = ".m3u8" in stream_url.lower() or "manifest" in stream_url.lower()
+                if is_m3u8_hint:
+                    resp = requests.get(stream_url, headers=headers, cookies=cookies or None, timeout=12, verify=False, allow_redirects=True)
+                    c_type = resp.headers.get("Content-Type", "").lower()
+                    if resp.status_code == 200 and ("mpegurl" in c_type or resp.text.startswith("#EXTM3U") or is_m3u8_hint):
+                        rewritten_lines = []
+                        for line in resp.text.splitlines():
+                            line_str = line.strip()
+                            if line_str and not line_str.startswith("#"):
+                                abs_u = urllib.parse.urljoin(resp.url, line_str)
+                                proxied = f"/api/stream-proxy?url={urllib.parse.quote(abs_u, safe='')}&referer={urllib.parse.quote(referer, safe='')}"
+                                rewritten_lines.append(proxied)
+                            else:
+                                rewritten_lines.append(line)
+                        m3u8_data = "\n".join(rewritten_lines).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
+                        self.send_header("Content-Length", str(len(m3u8_data)))
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_cors_headers()
+                        self.end_headers()
+                        self.wfile.write(m3u8_data)
+                        return
 
                 req_range = self.headers.get("Range")
                 if req_range:
                     headers["Range"] = req_range
 
-                from core.detector import MediaDetector
-                cookies = MediaDetector.get_cookies_for_url(stream_url)
-                resp = requests.get(stream_url, headers=headers, cookies=cookies or None, stream=True, timeout=15, allow_redirects=True)
+                resp = requests.get(stream_url, headers=headers, cookies=cookies or None, stream=True, timeout=20, verify=False, allow_redirects=True)
+                if resp.status_code == 403 and "Origin" in headers:
+                    del headers["Origin"]
+                    resp = requests.get(stream_url, headers=headers, cookies=cookies or None, stream=True, timeout=20, verify=False, allow_redirects=True)
+
                 self.send_response(resp.status_code)
                 for h in ["Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"]:
                     if h in resp.headers:
@@ -514,9 +539,23 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
         if (!mediaUrl || typeof mediaUrl !== 'string') return;
         var u = mediaUrl.trim();
         if (u.indexOf('data:') === 0 || u.indexOf('blob:') === 0) return;
+        try {{
+            u = new URL(u, window.location.href).href;
+        }} catch(e) {{}}
         var clean = u.split('?')[0].toLowerCase();
-        if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp')) return;
-        if (u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1 || u.indexOf('.mp4') !== -1 || u.indexOf('.webm') !== -1 || u.indexOf('/video/') !== -1 || u.indexOf('/stream/') !== -1 || u.indexOf('/get_file/') !== -1) {{
+        if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp') || clean.endsWith('.ico') || clean.endsWith('.css') || clean.endsWith('.js')) return;
+        var low = u.toLowerCase();
+        var isMedia = (
+            low.indexOf('.m3u8') !== -1 || low.indexOf('.mpd') !== -1 ||
+            low.indexOf('.mp4') !== -1 || low.indexOf('.webm') !== -1 ||
+            low.indexOf('.mkv') !== -1 || low.indexOf('.mov') !== -1 ||
+            low.indexOf('.m4v') !== -1 || low.indexOf('.ts') !== -1 ||
+            low.indexOf('/videoplayback') !== -1 || low.indexOf('/video/') !== -1 ||
+            low.indexOf('/stream/') !== -1 || low.indexOf('/get_file/') !== -1 ||
+            low.indexOf('/videofile/') !== -1 || low.indexOf('mime=video') !== -1 ||
+            low.indexOf('manifest') !== -1
+        );
+        if (isMedia) {{
             try {{
                 window.parent.postMessage({{
                     type: 'SNIFFED_STREAM',
@@ -721,14 +760,7 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
                 self.send_error_json("Empty URL provided", 400)
                 return
 
-            # Normalize mat6tube-style VK video IDs to proper vk.com URLs
-            # mat6tube embeds VK videos as /watch/-OWNERID_VIDEOID
-            import re as _re
-            _vk_m = _re.search(r'/watch/(-?\d+_\d+)', url)
-            if _vk_m and "mat6tube" in url.lower():
-                vk_video_id = _vk_m.group(1)
-                url = f"https://vk.com/video{vk_video_id}"
-                print(f"[Analyze] mat6tube → VK video redirect: {url}")
+            # Direct URL analysis without breaking domain rewrite
 
             # Run analyze in thread with 45-second hard timeout so UI never freezes
             import threading as _threading

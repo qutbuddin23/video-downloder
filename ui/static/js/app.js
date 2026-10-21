@@ -375,6 +375,17 @@ async function downloadAllAnalyzedFiles() {
 }
 
 // Watch Video Directly In-App Without Opening Website
+let globalHlsInstance = null;
+
+function destroyHlsInstance() {
+    if (globalHlsInstance) {
+        try {
+            globalHlsInstance.destroy();
+        } catch (_) {}
+        globalHlsInstance = null;
+    }
+}
+
 function watchAnalyzedVideo() {
     if (!currentAnalysis) return;
     let streamUrl = currentAnalysis.direct_url;
@@ -393,17 +404,49 @@ function watchAnalyzedVideo() {
         if (errBox) errBox.style.display = 'none';
         if (extBtn) extBtn.style.display = 'inline-block';
 
-        // Route through local stream proxy to prevent 403 Forbidden on mobile
+        destroyHlsInstance();
+        player.pause();
+        player.removeAttribute('src');
+
+        const refUrl = (currentAnalysis && currentAnalysis.source_url) ? encodeURIComponent(currentAnalysis.source_url) : '';
+        const proxiedStreamUrl = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}&referer=${refUrl}`;
+        const isHls = streamUrl.toLowerCase().includes('.m3u8') || streamUrl.toLowerCase().includes('manifest/hls') || (selectedFormat && selectedFormat.ext === 'm3u8');
+
         player.onerror = () => {
             if (errBox) {
                 errBox.style.display = 'block';
             }
         };
 
-        const refUrl = (currentAnalysis && currentAnalysis.source_url) ? encodeURIComponent(currentAnalysis.source_url) : '';
-        player.src = `/api/stream-proxy?url=${encodeURIComponent(streamUrl)}&referer=${refUrl}`;
+        if (isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
+            try {
+                const hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    lowLatencyMode: true
+                });
+                globalHlsInstance = hls;
+                hls.loadSource(proxiedStreamUrl);
+                hls.attachMedia(player);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    player.play().catch(e => console.log('Autoplay deferred:', e));
+                });
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    if (data && data.fatal) {
+                        console.warn('HLS fatal error:', data);
+                        if (errBox) errBox.style.display = 'block';
+                    }
+                });
+            } catch (hlsErr) {
+                player.src = proxiedStreamUrl;
+                player.play().catch(e => console.log('Autoplay deferred:', e));
+            }
+        } else {
+            player.src = proxiedStreamUrl;
+            player.play().catch(e => console.log('Autoplay deferred:', e));
+        }
+
         modal.classList.add('active');
-        player.play().catch(e => console.log('Autoplay deferred:', e));
     } else {
         showToast('⚡ Starting download so you can watch in HD player!');
         startDownload(currentAnalysis, selectedFormat || currentAnalysis.formats[0]);
@@ -855,6 +898,7 @@ let currentPlayingDownloadId = null;
 
 // --- Video Player Modal & Phone Player Launcher ---
 function playVideo(downloadId) {
+    destroyHlsInstance();
     currentPlayingDownloadId = downloadId;
     const modal = document.getElementById('player-modal');
     const player = document.getElementById('media-player');
@@ -920,6 +964,7 @@ async function playVaultVideo(vaultId) {
 }
 
 function closePlayer() {
+    destroyHlsInstance();
     const modal = document.getElementById('player-modal');
     const player = document.getElementById('media-player');
     const errBox = document.getElementById('player-error-msg');

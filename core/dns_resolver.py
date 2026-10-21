@@ -120,10 +120,47 @@ def query_udp_dns(server_ip: str, domain: str, timeout: float = 2.0) -> List[str
         return []
 
 
+def query_doh(domain: str, timeout: float = 2.5) -> List[str]:
+    """
+    Queries secure DNS-over-HTTPS (DoH) via Cloudflare & Google to bypass
+    ISP UDP port 53 hijacking, DPI interception, and regional DNS blocks.
+    Pure Python standard library (urllib.request + json).
+    """
+    import urllib.request
+    import json
+
+    doh_endpoints = [
+        f"https://cloudflare-dns.com/dns-query?name={domain}&type=A",
+        f"https://dns.google/resolve?name={domain}&type=A"
+    ]
+    for ep in doh_endpoints:
+        try:
+            req = urllib.request.Request(
+                ep,
+                headers={"Accept": "application/dns-json", "User-Agent": "Mozilla/5.0"}
+            )
+            # Use raw unhooked socket to avoid recursive loops
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    answers = data.get("Answer", [])
+                    ips = []
+                    for a in answers:
+                        if a.get("type") == 1 and "data" in a:
+                            ip = a["data"].strip()
+                            if not ip.startswith("0.") and not ip.startswith("127."):
+                                ips.append(ip)
+                    if ips:
+                        return ips
+        except Exception:
+            continue
+    return []
+
+
 def resolve_host_with_fallback(host: str) -> Optional[str]:
     """
     Attempts to resolve host using in-memory cache, static mappings,
-    or direct UDP queries against authoritative and public DNS providers.
+    UDP queries against authoritative/public DNS, or secure DoH (DNS-over-HTTPS).
     """
     if not host or not isinstance(host, str):
         return None
@@ -140,15 +177,24 @@ def resolve_host_with_fallback(host: str) -> Optional[str]:
             _DNS_CACHE[clean_host] = "50.7.252.210"
             return "50.7.252.210"
 
-    # 2. Query fallback DNS servers in order
+    # 2. Query fallback DNS servers in order (UDP 53)
     for server_ip in FALLBACK_DNS_SERVERS:
-        ips = query_udp_dns(server_ip, clean_host, timeout=2.0)
+        ips = query_udp_dns(server_ip, clean_host, timeout=1.5)
         if ips and ips[0] and not ips[0].startswith("0.") and not ips[0].startswith("127."):
             chosen_ip = ips[0]
             with _LOCK:
                 _DNS_CACHE[clean_host] = chosen_ip
             print(f"[SmartDNS] Successfully resolved '{clean_host}' -> {chosen_ip} via DNS server {server_ip}")
             return chosen_ip
+
+    # 3. Query DNS-over-HTTPS (DoH) over port 443 to bypass ISP UDP-53 blocking
+    doh_ips = query_doh(clean_host, timeout=2.5)
+    if doh_ips:
+        chosen_ip = doh_ips[0]
+        with _LOCK:
+            _DNS_CACHE[clean_host] = chosen_ip
+        print(f"[SmartDNS] Successfully resolved '{clean_host}' -> {chosen_ip} via DoH (DNS-over-HTTPS)")
+        return chosen_ip
 
     return None
 

@@ -63,15 +63,18 @@ def promote_to_foreground():
 
         icon_id = 0
         try:
-            icon_id = service.getApplicationInfo().icon
+            icon_id = int(service.getApplicationInfo().icon)
         except Exception:
             pass
         if not icon_id:
             try:
-                android_R = autoclass("android.R$drawable")
-                icon_id = getattr(android_R, "stat_sys_download", 17301634)
+                res = service.getResources()
+                pkg = service.getPackageName()
+                icon_id = res.getIdentifier("icon", "mipmap", pkg) or res.getIdentifier("ic_launcher", "mipmap", pkg)
             except Exception:
-                icon_id = 17301634
+                pass
+        if not icon_id:
+            icon_id = 17301651
 
         builder.setSmallIcon(int(icon_id))
         builder.setOngoing(True)

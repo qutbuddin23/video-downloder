@@ -156,25 +156,51 @@ class AndroidNotificationHelper:
         if cls._channel_created or not context:
             return
         try:
-            from jnius import autoclass
+            from jnius import autoclass, cast
             if get_android_sdk_level() >= 26:
                 NotificationChannel = autoclass("android.app.NotificationChannel")
                 NotificationManager = autoclass("android.app.NotificationManager")
                 Context = autoclass("android.content.Context")
                 String = autoclass("java.lang.String")
                 nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                importance = getattr(NotificationManager, "IMPORTANCE_LOW", 2)
                 channel = NotificationChannel(
                     String(cls.CHANNEL_ID),
-                    String(cls.CHANNEL_NAME),
-                    NotificationManager.IMPORTANCE_LOW
+                    cast("java.lang.CharSequence", String(cls.CHANNEL_NAME)),
+                    int(importance)
                 )
-                channel.setDescription(String("Progress and completion of video downloads"))
-                channel.enableVibration(False)
-                channel.setSound(None, None)
+                try:
+                    channel.setDescription(String("Progress and completion of video downloads"))
+                except Exception:
+                    pass
+                try:
+                    channel.enableVibration(False)
+                    channel.setSound(None, None)
+                except Exception:
+                    pass
                 nm.createNotificationChannel(channel)
             cls._channel_created = True
         except Exception as e:
             print(f"[Notifications] Channel init notice: {e}")
+
+    @classmethod
+    def _get_icon(cls, context) -> int:
+        icon_id = 0
+        try:
+            icon_id = int(context.getApplicationInfo().icon)
+        except Exception:
+            pass
+        if not icon_id:
+            try:
+                res = context.getResources()
+                pkg = context.getPackageName()
+                icon_id = res.getIdentifier("icon", "mipmap", pkg) or res.getIdentifier("ic_launcher", "mipmap", pkg)
+            except Exception:
+                pass
+        if not icon_id:
+            # 17301651 is android.R.drawable.sym_def_app_icon, guaranteed on all Android versions
+            icon_id = 17301651
+        return int(icon_id)
 
     @classmethod
     def update_progress(cls, notification_id: int, title: str, progress: float, speed_str: str = ""):
@@ -204,19 +230,7 @@ class AndroidNotificationHelper:
 
             builder.setContentTitle(cast("java.lang.CharSequence", title_str))
             builder.setContentText(cast("java.lang.CharSequence", body_str))
-
-            icon_id = 0
-            try:
-                icon_id = context.getApplicationInfo().icon
-            except Exception:
-                pass
-            if not icon_id:
-                try:
-                    android_R = autoclass("android.R$drawable")
-                    icon_id = getattr(android_R, "stat_sys_download", 17301634)
-                except Exception:
-                    icon_id = 17301634
-            builder.setSmallIcon(int(icon_id))
+            builder.setSmallIcon(cls._get_icon(context))
             builder.setProgress(100, int(progress), False)
             builder.setOngoing(True)
             builder.setOnlyAlertOnce(True)
@@ -247,19 +261,7 @@ class AndroidNotificationHelper:
 
             builder.setContentTitle(cast("java.lang.CharSequence", String("✅ Download Complete!")))
             builder.setContentText(cast("java.lang.CharSequence", String(title[:50])))
-
-            icon_id = 0
-            try:
-                icon_id = context.getApplicationInfo().icon
-            except Exception:
-                pass
-            if not icon_id:
-                try:
-                    android_R = autoclass("android.R$drawable")
-                    icon_id = getattr(android_R, "stat_sys_download_done", 17301633)
-                except Exception:
-                    icon_id = 17301633
-            builder.setSmallIcon(int(icon_id))
+            builder.setSmallIcon(cls._get_icon(context))
             builder.setProgress(0, 0, False)
             builder.setOngoing(False)
             builder.setAutoCancel(True)
@@ -291,19 +293,7 @@ class AndroidNotificationHelper:
             err_text = error_msg if error_msg else "Download failed"
             builder.setContentTitle(cast("java.lang.CharSequence", String("❌ Download Failed")))
             builder.setContentText(cast("java.lang.CharSequence", String(f"{title[:30]}: {err_text[:40]}")))
-
-            icon_id = 0
-            try:
-                icon_id = context.getApplicationInfo().icon
-            except Exception:
-                pass
-            if not icon_id:
-                try:
-                    android_R = autoclass("android.R$drawable")
-                    icon_id = getattr(android_R, "stat_notify_error", 17301624)
-                except Exception:
-                    icon_id = 17301624
-            builder.setSmallIcon(int(icon_id))
+            builder.setSmallIcon(cls._get_icon(context))
             builder.setProgress(0, 0, False)
             builder.setOngoing(False)
             builder.setAutoCancel(True)
@@ -328,7 +318,7 @@ class AndroidNotificationHelper:
 
 
 class AndroidWakeLockHelper:
-    """Keeps Android CPU awake and Wi-Fi chip active during background and screen-off downloads."""
+    """Keeps Android CPU awake, Wi-Fi chip active, and foreground service running during screen-off downloads."""
     _wake_lock = None
     _wifi_lock = None
     _active_count = 0
@@ -355,6 +345,10 @@ class AndroidWakeLockHelper:
                 if pm:
                     # PARTIAL_WAKE_LOCK = 1: keeps CPU running when screen is off or device is locked
                     cls._wake_lock = pm.newWakeLock(1, "UniversalDownloader:DownloadWakeLock")
+                    try:
+                        cls._wake_lock.setReferenceCounted(False)
+                    except Exception:
+                        pass
                     cls._wake_lock.acquire()
                     print("[WakeLock] Acquired PARTIAL_WAKE_LOCK for background download.")
 
@@ -363,8 +357,26 @@ class AndroidWakeLockHelper:
                 if wm:
                     # WIFI_MODE_FULL_HIGH_PERF = 3
                     cls._wifi_lock = wm.createWifiLock(3, "UniversalDownloader:WifiLock")
+                    try:
+                        cls._wifi_lock.setReferenceCounted(False)
+                    except Exception:
+                        pass
                     cls._wifi_lock.acquire()
                     print("[WifiLock] Acquired WifiLock for high-speed download.")
+
+                # Ensure Android Background Foreground Service is active
+                try:
+                    pkg = str(context.getPackageName())
+                    for sname in [f"{pkg}.ServiceDownloader", "org.universal.universaldownloader.ServiceDownloader", "org.universal.videodownloader.ServiceDownloader"]:
+                        try:
+                            s_class = autoclass(sname)
+                            s_class.start(context, "")
+                            print(f"[WakeLock] Ensured foreground service active: {sname}")
+                            break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[WakeLock] acquire notice: {e}")
 
@@ -524,9 +536,15 @@ class DownloadTask:
                     os.makedirs(self.output_dir, exist_ok=True)
                 print(f"[Downloader] Migrated output_dir to: '{self.output_dir}'")
 
+            existing_rec = self.db.get_download(self.task_id) or {}
+            init_prog = existing_rec.get("progress") or 0.0
+            init_downloaded = existing_rec.get("downloaded_bytes") or 0
+            init_total = existing_rec.get("total_bytes") or 0
+            self.last_bytes = init_downloaded
+
             self.db.update_download_progress(
-                self.task_id, status="downloading", progress=0.0,
-                downloaded_bytes=0, total_bytes=0, speed=0.0
+                self.task_id, status="downloading", progress=init_prog,
+                downloaded_bytes=init_downloaded, total_bytes=init_total, speed=0.0
             )
 
             # Strategy 1: Native MEGA.nz cloud download with AES-CTR decryption (single file or folder node)
@@ -978,12 +996,18 @@ class DownloadTask:
                     pass
             raise ValueError(f"Server returned non-video content type ({c_type}).")
 
-        total_size = downloaded
-        if "content-length" in resp.headers:
-            total_size += int(resp.headers["content-length"])
+        if resp.status_code == 200 and downloaded > 0:
+            downloaded = 0
+            mode = "wb"
+            total_size = int(resp.headers.get("content-length", 0))
+        elif resp.status_code == 206:
+            mode = "ab" if downloaded > 0 else "wb"
+            total_size = downloaded + int(resp.headers.get("content-length", 0))
+        else:
+            mode = "wb"
+            total_size = int(resp.headers.get("content-length", 0))
         self._fallback_total_size = total_size
 
-        mode = "ab" if downloaded > 0 else "wb"
         chunk_size = 2 * 1024 * 1024  # 2 MB chunk buffer
         self.last_time = time.time()
         self.last_bytes = downloaded
@@ -1045,6 +1069,13 @@ class DownloadTask:
                 raise Exception("Download cancelled by user.")
             if self.is_paused:
                 AndroidNotificationHelper.cancel(self.notification_id)
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or self.last_bytes or 0
+                prog = (downloaded / total * 100) if total else 0
+                self.db.update_download_progress(
+                    self.task_id, status="paused", progress=round(prog, 1),
+                    downloaded_bytes=downloaded, total_bytes=total, speed=0.0
+                )
                 raise Exception("Download paused by user.")
 
             if d["status"] == "downloading":
@@ -1102,6 +1133,7 @@ class DownloadTask:
         ydl_opts = {
             "format": format_sel,
             "outtmpl": outtmpl,
+            "continuedl": True,
             "progress_hooks": [hook],
             "quiet": True,
             "no_warnings": True,
@@ -1132,6 +1164,8 @@ class DownloadTask:
             try:
                 info = ydl.extract_info(target_to_use, download=True)
             except Exception as primary_err:
+                if self.is_paused or self.is_cancelled:
+                    return
                 clean_target = (self.direct_url or "").split("?")[0].lower()
                 is_direct = any(clean_target.endswith(ext) for ext in [".mp4", ".webm", ".mkv", ".mov", ".ts", ".m4v", ".m3u8", ".mpd"])
                 if self.direct_url and self.direct_url != target_to_use:
@@ -1290,11 +1324,16 @@ class DownloadManager:
         return download_id
 
     def pause_download(self, download_id: str):
-        if download_id in self.tasks:
-            self.tasks[download_id].pause()
+        task = self.tasks.get(download_id)
+        if task:
+            task.pause()
+        record = self.db.get_download(download_id) or {}
+        cur_prog = record.get("progress") or 0.0
+        cur_dl = getattr(task, "last_bytes", None) or record.get("downloaded_bytes") or 0
+        cur_tot = getattr(task, "_fallback_total_size", None) or record.get("total_bytes") or 0
         self.db.update_download_progress(
-            download_id, status="paused", progress=0.0,
-            downloaded_bytes=0, total_bytes=0, speed=0.0
+            download_id, status="paused", progress=cur_prog,
+            downloaded_bytes=cur_dl, total_bytes=cur_tot, speed=0.0
         )
 
     def resume_download(self, download_id: str):

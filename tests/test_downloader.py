@@ -269,5 +269,53 @@ def test_human_format_label_sanitized(temp_db):
         assert "Stream 1" not in called_opts["format"]
 
 
+def test_pause_resume_preserves_progress(temp_db):
+    db, temp_dir = temp_db
+    dm = DownloadManager(db)
+
+    dl_id = dm.create_download(
+        url="https://example.com/test.mp4",
+        title="Resume Test Video",
+        quality_label="720p",
+        format_selector="best",
+        direct_url=None,
+        auto_start=False
+    )
+
+    # Simulate in-progress download
+    db.update_download_progress(
+        dl_id, status="downloading", progress=55.5,
+        downloaded_bytes=555000, total_bytes=1000000, speed=102400.0
+    )
+
+    # Now pause
+    dm.pause_download(dl_id)
+    paused_rec = db.get_download(dl_id)
+    assert paused_rec["status"] == "paused"
+    assert paused_rec["progress"] == 55.5
+    assert paused_rec["downloaded_bytes"] == 555000
+    assert paused_rec["total_bytes"] == 1000000
+
+    # Now test DownloadTask._run starting from paused state
+    task = DownloadTask(
+        task_id=dl_id,
+        url=paused_rec["url"],
+        title=paused_rec["title"],
+        format_selector="best",
+        direct_url=None,
+        output_dir=temp_dir,
+        db=db
+    )
+    # Mock download execution
+    with patch.object(task, "_download_via_ytdlp"), patch.object(task, "_download_direct_http"):
+        task._run()
+        running_rec = db.get_download(dl_id)
+        # Progress must NOT be reset to 0.0!
+        assert running_rec["progress"] == 55.5
+        assert running_rec["downloaded_bytes"] == 555000
+        assert running_rec["total_bytes"] == 1000000
+
+
+
 
 

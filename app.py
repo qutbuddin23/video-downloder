@@ -540,7 +540,7 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
         var u = mediaUrl.trim();
         if (u.indexOf('data:') === 0 || u.indexOf('blob:') === 0) return;
         try {{
-            u = new URL(u, window.location.href).href;
+            u = new URL(u, '{final_target}').href;
         }} catch(e) {{}}
         var clean = u.split('?')[0].toLowerCase();
         if (clean.endsWith('.svg') || clean.endsWith('.png') || clean.endsWith('.jpg') || clean.endsWith('.jpeg') || clean.endsWith('.gif') || clean.endsWith('.webp') || clean.endsWith('.ico') || clean.endsWith('.css') || clean.endsWith('.js')) return;
@@ -585,6 +585,32 @@ div[style*="position:fixed"][style*="z-index:99999"] {{
         scanExistingMedia();
     }}
     setInterval(scanExistingMedia, 2500);
+
+    // 3b. Intercept HTMLMediaElement.prototype.src setter
+    try {{
+        var descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+        if (descriptor && descriptor.set) {{
+            var origSet = descriptor.set;
+            descriptor.set = function(val) {{
+                if (val) report(val);
+                return origSet.call(this, val);
+            }};
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', descriptor);
+        }}
+    }} catch(e) {{}}
+
+    // 3c. Intercept Element.prototype.setAttribute for video/source/audio
+    try {{
+        var origSetAttr = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function(name, val) {{
+            if (name && (name.toLowerCase() === 'src' || name.toLowerCase() === 'data-src')) {{
+                if (val && (this.tagName === 'VIDEO' || this.tagName === 'SOURCE' || this.tagName === 'AUDIO')) {{
+                    report(val);
+                }}
+            }}
+            return origSetAttr.apply(this, arguments);
+        }};
+    }} catch(e) {{}}
 
     // 4. Hook MediaElement.play
     try {{

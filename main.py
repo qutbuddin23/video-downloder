@@ -100,9 +100,37 @@ try:
                 PythonActivity = autoclass("org.kivy.android.PythonActivity")
                 activity = PythonActivity.mActivity
                 if activity:
-                    service = autoclass("org.universal.universaldownloader.ServiceDownloader")
-                    service.start(activity, "")
-                    print("[Android Launcher] Started Android Background ServiceDownloader!")
+                    pkg = str(activity.getPackageName())
+                    started = False
+                    for sname in [f"{pkg}.ServiceDownloader", "org.universal.universaldownloader.ServiceDownloader"]:
+                        try:
+                            service = autoclass(sname)
+                            service.start(activity, "")
+                            print(f"[Android Launcher] Started Android Background {sname}!")
+                            started = True
+                            break
+                        except Exception:
+                            pass
+                    if not started:
+                        print("[Android Launcher] Background service class lookup notice.")
+
+                    # Request Battery Optimization exemption so screen-off network is never killed by OS
+                    try:
+                        Context = autoclass("android.content.Context")
+                        PowerManager = autoclass("android.os.PowerManager")
+                        pm = activity.getSystemService(Context.POWER_SERVICE)
+                        if pm and hasattr(pm, "isIgnoringBatteryOptimizations"):
+                            if not pm.isIgnoringBatteryOptimizations(pkg):
+                                Intent = autoclass("android.content.Intent")
+                                Settings = autoclass("android.provider.Settings")
+                                Uri = autoclass("android.net.Uri")
+                                b_intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                b_intent.setData(Uri.parse(f"package:{pkg}"))
+                                b_intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                activity.startActivity(b_intent)
+                                print("[Android Launcher] Requested battery optimization exemption.")
+                    except Exception as be:
+                        print(f"[Android Launcher] Battery optimization notice: {be}")
             except Exception as se:
                 print(f"[Android Launcher] ServiceDownloader notice: {se}")
 

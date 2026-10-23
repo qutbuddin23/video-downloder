@@ -305,6 +305,10 @@ class TurboSegmentedDownloader:
                 if resp.status_code not in (200, 206):
                     raise ValueError(f"Worker {worker_id} HTTP error: {resp.status_code}")
 
+                if resp.status_code == 200 and downloaded > 0:
+                    downloaded = 0
+                    mode = "wb"
+
                 with open(slice_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=self.CHUNK_BUFFER_SIZE):
                         if self.is_cancelled_fn() or self.is_paused_fn():
@@ -363,9 +367,20 @@ class TurboSegmentedDownloader:
             if resp.status_code not in (200, 206):
                 raise ValueError(f"HTTP Server returned status {resp.status_code}")
 
-            if not total_size and "Content-Length" in resp.headers:
+            if resp.status_code == 200 and downloaded > 0:
+                downloaded = 0
+                mode = "wb"
+
+            if resp.status_code == 206:
+                if "Content-Length" in resp.headers:
+                    try:
+                        total_size = downloaded + int(resp.headers["Content-Length"])
+                        self.total_size = total_size
+                    except ValueError:
+                        pass
+            elif not total_size and "Content-Length" in resp.headers:
                 try:
-                    total_size = downloaded + int(resp.headers["Content-Length"])
+                    total_size = int(resp.headers["Content-Length"])
                     self.total_size = total_size
                 except ValueError:
                     pass

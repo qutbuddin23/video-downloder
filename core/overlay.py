@@ -355,6 +355,8 @@ class AndroidFloatingOverlay:
 
     @staticmethod
     def can_draw_overlays() -> bool:
+        if get_android_sdk_level() < 23:
+            return True
         try:
             from jnius import autoclass
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
@@ -408,7 +410,7 @@ class AndroidFloatingOverlay:
             return False
 
     def start(self):
-        if self.is_active:
+        if self.is_active and self.floating_view:
             return
         if not self.can_draw_overlays():
             print("[Overlay] Cannot start Android overlay: overlay permission not granted.")
@@ -436,18 +438,18 @@ class AndroidFloatingOverlay:
                     Color = autoclass("android.graphics.Color")
                     GradientDrawable = autoclass("android.graphics.drawable.GradientDrawable")
 
-                    # Use Application Context or Activity WindowManager
-                    app_context = activity.getApplicationContext()
+                    # Prefer Activity WindowManager with fallback to Application Context
                     try:
-                        wm = app_context.getSystemService(Context.WINDOW_SERVICE)
-                    except Exception:
                         wm = activity.getSystemService(Context.WINDOW_SERVICE)
+                    except Exception:
+                        app_context = activity.getApplicationContext()
+                        wm = app_context.getSystemService(Context.WINDOW_SERVICE)
                     self.window_manager = wm
 
                     # In Android 8.0+ (API 26+), must use TYPE_APPLICATION_OVERLAY (2038)
                     layout_type = 2038 if get_android_sdk_level() >= 26 else 2002
-                    # FLAG_NOT_FOCUSABLE (8) | FLAG_LAYOUT_IN_SCREEN (256)
-                    flags = 8 | 256
+                    # FLAG_NOT_FOCUSABLE (8) | FLAG_NOT_TOUCH_MODAL (32) | FLAG_LAYOUT_IN_SCREEN (256)
+                    flags = 8 | 32 | 256
 
                     params = LayoutParams(
                         int(170), int(170),

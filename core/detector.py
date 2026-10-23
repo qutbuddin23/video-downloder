@@ -624,20 +624,21 @@ class MediaDetector:
                 pass
 
         if not html:
-            # Fallback to Resilient Web Gateway Proxy when ISP / country network blocks direct connection
-            try:
-                print(f"[Detector] Direct connection to {url} blocked or timed out, trying web gateway fallback...")
-                gateway_url = f"https://r.jina.ai/{url}"
-                g_resp = requests.get(
-                    gateway_url,
-                    headers={"X-Return-Format": "html", "User-Agent": "Mozilla/5.0"},
-                    timeout=15
-                )
-                if g_resp.status_code == 200 and len(g_resp.text) > 200:
-                    html = g_resp.text
-                    print(f"[Detector] Successfully fetched {len(html)} bytes via web gateway for {url}")
-            except Exception as ge:
-                print(f"[Detector] Web gateway notice: {ge}")
+            # Fallback to Resilient Web Gateways when ISP / country network blocks direct connection
+            gateways = [
+                ("https://r.jina.ai/" + url, {"X-Return-Format": "html", "User-Agent": "Mozilla/5.0"}),
+                (f"https://api.allorigins.win/raw?url={urllib.parse.quote(url, safe='')}", {"User-Agent": "Mozilla/5.0"}),
+                (f"https://corsproxy.io/?url={urllib.parse.quote(url, safe='')}", {"User-Agent": "Mozilla/5.0"}),
+            ]
+            for g_url, g_hdrs in gateways:
+                try:
+                    g_resp = requests.get(g_url, headers=g_hdrs, timeout=12)
+                    if g_resp.status_code == 200 and len(g_resp.text) > 200:
+                        html = g_resp.text
+                        print(f"[Detector] Successfully fetched {len(html)} bytes via web gateway ({g_url[:40]}...) for {url}")
+                        break
+                except Exception:
+                    pass
 
         if not html:
             return {
@@ -840,6 +841,10 @@ class MediaDetector:
             r'["\' ](?:1080p?|720p?|480p?|360p?|240p?|2160p?|1440p?|high|medium|med|low|hd|sd)["\' ]?\s*[:=]\s*["\' ]([^"\' <>]{10,})["\' ]',
             r'data-(?:src|stream|video|hls|url|file)\s*=\s*["\' ]([^"\' <>]{10,})["\' ]',
             r'"(?:url|src|link|file|stream|source|videoUrl|streamUrl|hlsUrl)"\s*:\s*"([^"<>{}\[\]]{10,})"',
+            r'jwplayer\([^)]*\)\.setup\(\s*\{[^}]*(?:file|src)\s*:\s*["\' ]([^"\' <>]+)["\' ]',
+            r'player\.src\(\s*\{[^}]*(?:src|file)\s*:\s*["\' ]([^"\' <>]+)["\' ]',
+            r'new\s+Player\([^)]*\{[^}]*url\s*:\s*["\' ]([^"\' <>]+)["\' ]',
+            r'["\'](https?:\\/\\/[^"\'\s<>]+\.(?:mp4|m3u8|mpd|webm)[^"\'\s<>]*)["\']',
             r'atob\s*\(\s*["\' ]([A-Za-z0-9+/=]{20,})["\' ]',
             r'https?://[^\s"\' <>\\]+\.m3u8(?:[?#][^\s"\' <>]*)?',
             r'https?://[^\s"\' <>\\]+\.mpd(?:[?#][^\s"\' <>]*)?',
